@@ -5,16 +5,18 @@ fully multi-tenant. Every gate is a standalone, independently-invocable, pure-is
 function whose behavior is driven by per-tenant **configuration**, never by hardcoded
 tenant/asset identifiers.
 
-This repository currently implements **Section 20, steps 1–4** of the approved
-blueprint:
+This repository currently implements **Section 20, steps 1–4 + step 6** of the
+approved blueprint:
 
 1. **C1 — Source of Truth Lock** (the foundation gate)
 2. **The tenant-scoped persistence layer** (all six Section 14 data schemas)
 3. **C6 — Message-Idea Governance** (the runtime entry point; produces a disposition + record)
 4. **C2 — Situational Bank** (resolves a situational category from a real-time signal)
+6. **C4 — Caption-First Resolution** (reuses existing content via a strict 3-step ladder)
 
-The remaining gates (C3, C4, C5, C7, C8) are intentionally not yet implemented —
-they come later in the blueprint implementation sequence.
+Step 5 (**C3 — Repetition Governor**) is delivered on its own branch/PR. The
+remaining gates (C5, C7, C8) are intentionally not yet implemented — they come
+later in the blueprint implementation sequence.
 
 ---
 
@@ -35,6 +37,7 @@ src/
 ├── gates/
 │   ├── c1/                    # C1 — Source of Truth Lock
 │   ├── c2/                    # C2 — Situational Bank
+│   ├── c4/                    # C4 — Caption-First Resolution
 │   └── c6/                    # C6 — Message-Idea Governance
 ├── seeds/
 │   └── zilly.ts               # Zilly reference-deployment seed (first tenant)
@@ -174,6 +177,51 @@ Momentum, Chaos, Comic Relief, **Adversity** (empty by design — `prestocked_fl
 false`), Victory, Transition/Pivot, Weather-Specific, **Friday** (`protected_flag:
 true` — never downgraded/substituted). A resolved protected category is returned
 exactly as-is; the gate performs no downgrade of a resolved category.
+
+---
+
+## C4 — Caption-First Resolution
+
+```ts
+resolve(category_id: string, content_need: ContentNeed, tenant_id: string)
+  => Promise<
+       | { resolved: true;  escalate: false; asset_id: string; caption: string;
+           resolution_step: 'existing_as_is' | 'recaption'; reason: string }
+       | { resolved: false; escalate: true;  asset_id: null;   caption: null;
+           resolution_step: 'escalate_to_c5'; reason: string }
+     >
+```
+
+C4 satisfies a **content need** inside a category by *preferring reuse over
+creation*. It walks a **strict, never-skipped 3-step ladder** and stops at the
+first step that yields a usable asset:
+
+1. **existing-as-is** — an asset already in the category whose **current caption**
+   already satisfies the need → reuse it verbatim (returns the asset's own caption).
+2. **recaption** — an asset in the category is reusable but its caption does not
+   match → reuse the asset with the **needed** caption.
+3. **escalate to C5** — no reusable asset in the category → `{ escalate: true }`.
+
+**Never skip a step (binding):** recaption is only considered after the as-is scan
+finds nothing; escalation is only returned after both prior steps produce nothing.
+As-is always beats recaption, recaption always beats escalation — verified by
+ordering tests (an as-is match wins even when a recaption candidate is listed first).
+
+`content_need` carries the required `caption` plus optional `required_tag` and
+`exclude_asset_ids` filters (e.g. to drop assets an upstream gate like C3 already
+ruled out). Caption matching for the as-is step is case- and whitespace-insensitive.
+Resolution is deterministic: assets are considered in `asset_list` order.
+
+Invalid input throws rather than silently escalating: an empty `caption` throws
+`InvalidContentNeedError`, and an unknown category throws `CategoryNotFoundError`
+(distinct from a *known but empty* category, which legitimately escalates).
+
+**Caption storage (design decision — flagged for review):** the blueprint's
+caption-first contract implies a per-asset caption, but the Section 14 baseline had
+no caption field. C4 adds a nullable `caption` column to `AssetRegistry` (migration
+`20260805130000_c4_asset_caption`) and an `assetRegistry.updateCaption()` helper to
+persist an accepted recaption. `resolve()` itself is a **pure decision** (it does
+not mutate) — persisting a recaption is a downstream step.
 
 ---
 

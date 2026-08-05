@@ -13,6 +13,8 @@ export interface AssetRecord {
   asset_id: string;
   tag: AssetTag;
   category: string | null;
+  /** Current caption on the asset (used by C4 caption-first resolution). */
+  caption: string | null;
   parent_asset_id: string | null;
   content_hash: string | null;
   sealed_hash: string | null;
@@ -24,6 +26,8 @@ export interface CreateAssetInput {
   asset_id: string;
   tag: AssetTag;
   category?: string | null;
+  /** Current caption on the asset (used by C4 caption-first resolution). */
+  caption?: string | null;
   parent_asset_id?: string | null;
   content_hash?: string | null;
   /** Recorded content hash captured at lock time; defaults to content_hash. */
@@ -36,6 +40,7 @@ function rowToRecord(row: {
   asset_id: string;
   tag: string;
   category: string | null;
+  caption: string | null;
   parent_asset_id: string | null;
   content_hash: string | null;
   sealed_hash: string | null;
@@ -55,6 +60,7 @@ export async function createAsset(input: CreateAssetInput): Promise<AssetRecord>
       asset_id: input.asset_id,
       tag: input.tag,
       category: input.category ?? null,
+      caption: input.caption ?? null,
       parent_asset_id: input.parent_asset_id ?? null,
       content_hash: input.content_hash ?? null,
       sealed_hash: input.sealed_hash ?? input.content_hash ?? null,
@@ -76,6 +82,25 @@ export async function getAsset(
     where: { tenant_id_asset_id: { tenant_id, asset_id } },
   });
   return row ? rowToRecord(row) : null;
+}
+
+/**
+ * Update an asset's current caption (tenant-scoped). Used to persist a C4
+ * recaption once the resolution is accepted downstream.
+ * @param tenant_id Tenant identifier.
+ * @param asset_id Asset identifier.
+ * @param caption New caption text (or null to clear).
+ */
+export async function updateCaption(
+  tenant_id: string,
+  asset_id: string,
+  caption: string | null,
+): Promise<AssetRecord> {
+  const row = await prisma.assetRegistry.update({
+    where: { tenant_id_asset_id: { tenant_id, asset_id } },
+    data: { caption },
+  });
+  return rowToRecord(row);
 }
 
 /**
