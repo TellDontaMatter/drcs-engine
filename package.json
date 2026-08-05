@@ -1,7 +1,7 @@
 {
   "name": "drcs-engine",
   "version": "0.1.0",
-  "description": "Dynamic Response Content System (DRCS) engine — one canonical codebase, eight gates (C1–C8), multi-tenant. This build covers Section 20 steps 1–2: C1 (Source of Truth Lock) and the tenant-scoped persistence foundation.",
+  "description": "Dynamic Response Content System (DRCS) engine \u2014 one canonical codebase, eight gates (C1\u2013C8), multi-tenant. This build covers Section 20 steps 1\u20132: C1 (Source of Truth Lock) and the tenant-scoped persistence foundation.",
   "license": "UNLICENSED",
   "private": true,
   "main": "dist/index.js",
@@ -12,7 +12,10 @@
     "seed:zilly": "ts-node src/seeds/zilly.ts",
     "pretest": "prisma generate",
     "test": "jest --runInBand",
-    "lint": "tsc --noEmit -p tsconfig.json"
+    "lint": "tsc --noEmit -p tsconfig.json",
+    "seed:demo": "ts-node src/seeds/demo.ts",
+    "serve": "ts-node src/server/index.ts",
+    "evaluate": "ts-node src/cli/index.ts"
   },
   "prisma": {
     "seed": "ts-node src/seeds/zilly.ts"

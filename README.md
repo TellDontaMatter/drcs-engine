@@ -5,21 +5,83 @@ fully multi-tenant. Every gate is a standalone, independently-invocable, pure-is
 function whose behavior is driven by per-tenant **configuration**, never by hardcoded
 tenant/asset identifiers.
 
-This repository currently implements **Section 20, steps 1–5** of the approved
-blueprint:This repository currently implements **Section 20, steps 1–4 + step 6** of the
-approved blueprint:
+This repository currently implements **Section 20, steps 1–6** of the approved
+blueprint, plus an **orchestrator** and **two usable surfaces** (web console + CLI)
+that tie the individual gates into one runnable engine:
+
 1. **C1 — Source of Truth Lock** (the foundation gate)
 2. **The tenant-scoped persistence layer** (all six Section 14 data schemas)
-3. **C6 — Message-Idea Governance** (the runtime entry point; produces a disposition + record)
+3. **C6 — Message-Idea Governance** (runs first; produces a disposition + record)
 4. **C2 — Situational Bank** (resolves a situational category from a real-time signal)
-5. **C3 — Repetition Governor** (enforces per-asset deployment frequency caps over a rolling window)
+5. **C3 — Repetition Governor** (enforces per-asset frequency caps over a rolling window)
+6. **C4 — Caption-First Resolution** (reuses existing content via a strict 3-step ladder)
 
-The remaining gates (C4, C5, C7, C8) are intentionally not yet implemented —
-they come later in the blueprint implementation sequence.6. **C4 — Caption-First Resolution** (reuses existing content via a strict 3-step ladder)
+Plus the layer that makes it usable:
 
-Step 5 (**C3 — Repetition Governor**) is delivered on its own branch/PR. The
-remaining gates (C5, C7, C8) are intentionally not yet implemented — they come
-later in the blueprint implementation sequence.
+- **Orchestrator** (`src/orchestrator`) — `evaluate(request, tenant_id)` runs the
+  gates in blueprint order (**C6 → C2 → C4 → C3**), short-circuits at the first
+  gate that stops the request, enforces each decision (no silent downgrade),
+  commits side effects only on PUBLISH, and returns **one verdict + a
+  gate-by-gate audit trail**.
+- **Web console** (`src/server`) — a local page where you submit a request and
+  watch it flow through the gates.
+- **CLI** (`src/cli`) — the same engine from the command line.
+
+The remaining gates (C5, C7, C8) are intentionally not yet implemented — they
+come later in the blueprint sequence. A C4 escalation currently ends the
+pipeline with outcome `ESCALATED_TO_C5` (the C5 hand-off lands with that gate).
+
+---
+
+## Use it yourself (2 minutes)
+
+```bash
+npm install
+npx prisma db push        # create the local SQLite dev DB
+npm run seed:zilly        # seed the Zilly tenant (canonical clips + taxonomy)
+npm run seed:demo         # OPTIONAL: illustrative clip→category assignments so a
+                          # full PUBLISH is reachable (NOT the canonical mapping)
+npm run serve             # open http://localhost:3000
+```
+
+Then open **http://localhost:3000**, fill in a situational condition + caption,
+pick a category, and click **Run through the engine**. You'll see the verdict
+(PUBLISH / BLOCKED), the specific outcome, and every gate's decision.
+
+> ⚠️ `seed:demo` is **illustrative only** — it assigns a few canonical clips to
+> categories with sample captions purely so the pipeline can reach a PUBLISH.
+> The real Zilly clip→category mapping and per-clip captions are a pending human
+> decision and are **not** encoded anywhere in this repo.
+
+Prefer the command line?
+
+```bash
+npm run evaluate -- --tenant zilly \
+  --condition "gentle morning session" \
+  --category gentle_start \
+  --caption "Ease into it — double bounce to start."
+# add --dry-run to preview without logging a deployment
+# add --reviewer reject|hold to exercise the C6 governance stops
+```
+
+Or call it in code:
+
+```ts
+import { orchestrator } from 'drcs-engine';
+
+const verdict = await orchestrator.evaluate(
+  {
+    trigger: { condition: 'gentle morning session' },
+    condition_signal: { category_id: 'gentle_start' },
+    content_need: { caption: 'Ease into it — double bounce to start.' },
+  },
+  'zilly',
+);
+// verdict.decision -> 'PUBLISH' | 'BLOCKED'
+// verdict.outcome  -> PUBLISHED | GOVERNANCE_REJECTED | NO_CATEGORY | ESCALATED_TO_C5 | REPETITION_BLOCKED | ...
+// verdict.trail    -> gate-by-gate audit trail
+```
+
 ---
 
 ## Architecture overview
@@ -40,14 +102,20 @@ src/
 ├── gates/
 │   ├── c1/                    # C1 — Source of Truth Lock
 │   ├── c2/                    # C2 — Situational Bank
-│   ├── c3/                    # C3 — Repetition Governor│   ├── c4/                    # C4 — Caption-First Resolution│   └── c6/                    # C6 — Message-Idea Governance
+│   ├── c3/                    # C3 — Repetition Governor
+│   ├── c4/                    # C4 — Caption-First Resolution
+│   └── c6/                    # C6 — Message-Idea Governance
+├── orchestrator/             # evaluate() — runs the gate pipeline, returns a verdict + trail
+├── server/                   # Local web console (zero-dependency Node http server)
+├── cli/                      # Command-line surface
 ├── seeds/
-│   └── zilly.ts               # Zilly reference-deployment seed (first tenant)
+│   ├── zilly.ts               # Zilly reference-deployment seed (first tenant)
+│   └── demo.ts                # Illustrative clip→category assignments (NOT canonical)
 └── index.ts                   # Public entry point
 prisma/
 ├── schema.prisma              # All six Section 14 schemas + foundation tables
-└── migrations/0_init/         # Migration baseline
-tests/                         # Jest tests (Section 19 acceptance tests for C1)
+└── migrations/                # Migration baseline
+tests/                         # Jest tests (Section 19 acceptance tests + orchestrator e2e)
 ```
 
 ### Key design principles
@@ -220,7 +288,9 @@ a query error, a missing or unparseable `deployed_at`, a **future-dated** row
 explaining the trip.
 
 `now` is injectable via `tenant_params.now` purely so tests are deterministic; in
-production it defaults to the real clock.## C4 — Caption-First Resolution
+production it defaults to the real clock.
+
+## C4 — Caption-First Resolution
 
 ```ts
 resolve(category_id: string, content_need: ContentNeed, tenant_id: string)
@@ -262,6 +332,36 @@ no caption field. C4 adds a nullable `caption` column to `AssetRegistry` (migrat
 `20260805130000_c4_asset_caption`) and an `assetRegistry.updateCaption()` helper to
 persist an accepted recaption. `resolve()` itself is a **pure decision** (it does
 not mutate) — persisting a recaption is a downstream step.
+
+## Orchestrator — the engine that runs the gates
+
+```ts
+evaluate(request: EvaluationRequest, tenant_id: string)
+  => Promise<EvaluationVerdict>   // { decision, outcome, stopped_at_gate, asset_id,
+                                  //   caption, committed, reason, trail[] }
+```
+
+A gate on its own only *returns a decision* — nothing acts on it. The
+orchestrator is what a human (or an upstream system) actually calls. It runs the
+gates in the blueprint's binding order and **enforces** every decision:
+
+1. **C6** `govern(trigger)` — if the disposition is not `PUBLISH`, stop
+   (`GOVERNANCE_REJECTED` / `GOVERNANCE_HELD` / `GOVERNANCE_REROUTED`). A
+   protected disposition is **never** downgraded to keep cadence.
+2. **C2** `selectCategory(signal)` — if nothing resolves, stop (`NO_CATEGORY`).
+3. **C4** `resolve(category, need)` — if no reusable asset, stop
+   (`ESCALATED_TO_C5`, pending the C5 gate).
+4. **C3** `checkRepetition(asset)` — if the rolling cap is hit or the log fails
+   integrity, stop (`REPETITION_BLOCKED` / `REPETITION_FAILED_CLOSED`).
+5. **PUBLISH** — all gates cleared. Unless `commit: false` (dry run), the
+   orchestrator persists a C4 recaption and appends the deployment instance to
+   the usage log (which C3 counts next time).
+
+The pipeline **short-circuits** at the first gate that stops the request, and
+every run returns a **gate-by-gate audit trail** so you can see exactly where and
+why a request was stopped. The web console and CLI are thin wrappers over this
+one function.
+
 ---
 
 ## Persistence — Section 14 schemas
