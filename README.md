@@ -349,13 +349,74 @@ gates in the blueprint's binding order and **enforces** every decision:
    (`GOVERNANCE_REJECTED` / `GOVERNANCE_HELD` / `GOVERNANCE_REROUTED`). A
    protected disposition is **never** downgraded to keep cadence.
 2. **C2** `selectCategory(signal)` — if nothing resolves, stop (`NO_CATEGORY`).
-3. **C4** `resolve(category, need)` — if no reusable asset, stop
-   (`ESCALATED_TO_C5`, pending the C5 gate).
-4. **C3** `checkRepetition(asset)` — if the rolling cap is hit or the log fails
+3. **C4** `resolve(category, need)` — reuse existing content (existing-as-is or
+   recaption). If there is nothing to reuse, hand off to **C5**.
+4. **C5** `generate(...)` — the Misalignment Protocol. Generates a fresh caption
+   (real text-LLM call) plus an `asset_recommendation`, then pairs it with a
+   reusable category asset/file when one exists and, if a media generator is
+   registered, creates a new media file (see **Media generation** below). If the
+   LLM is unreachable, stop (`ESCALATE_FAILED`) — no silent fallback.
+5. **C3** `checkRepetition(asset)` — if the rolling cap is hit or the log fails
    integrity, stop (`REPETITION_BLOCKED` / `REPETITION_FAILED_CLOSED`).
-5. **PUBLISH** — all gates cleared. Unless `commit: false` (dry run), the
-   orchestrator persists a C4 recaption and appends the deployment instance to
-   the usage log (which C3 counts next time).
+6. **PUBLISH / GENERATED** — all gates cleared. Unless `commit: false` (dry run),
+   the orchestrator persists a C4 recaption and appends the deployment instance
+   to the usage log (which C3 counts next time).
+
+The verdict carries `caption`, `source` (`AS_IS` / `RECAPTIONED` / `GENERATED`),
+`asset_id`, `file_path`, and `asset_recommendation` — so a caller gets the final
+caption **and** the media file to post, in one call.
+
+### Simplified input — one idea in
+
+```ts
+evaluatePrompt(tenant_id: string, prompt: string) => Promise<EvaluationVerdict>
+```
+
+Give it a single free-form idea (e.g. *"Zilly just hit a new PR"*); it uses the
+LLM to derive the `situation` + `content_type`, then runs the exact same
+pipeline above. This is the "make content out of any idea" entry point.
+
+---
+
+## Media generation
+
+Be clear about what is and isn't automatic:
+
+- **Captions are generated at runtime.** C5 calls a real text-LLM HTTP endpoint
+  (`src/llm`, RouteLLM). This works out of the box (`ABACUS_API_KEY`).
+- **Images/videos are NOT auto-generated out of the box.** The engine bundles no
+  runtime image backend, so it does not fabricate one. Instead, media generation
+  is a **pluggable provider** (`src/media`) that you inject.
+
+By default the engine uses `NullMediaGenerator`: on a C5 generation it returns
+the fresh caption + an `asset_recommendation` (a description of the visual that
+would fit) and reuses a registered asset file for the category if one exists — it
+never invents an image. To actually create new media, wrap your own backend
+(DALL·E, Stable Diffusion, Replicate, an internal render service, …) and register
+it once at startup:
+
+```ts
+import { setMediaGenerator } from 'drcs-engine';
+
+setMediaGenerator({
+  async generate({ tenant_id, caption, category, asset_recommendation }) {
+    // Call whatever image/video backend you have:
+    const file_path = await myBackend.render(asset_recommendation, caption);
+    return { file_path };          // return null to decline / on failure
+  },
+});
+```
+
+Once registered, the orchestrator calls it after C5 produces a caption and puts
+the resulting `file_path` on the verdict. A provider that returns `null` or
+throws never sinks the request — you still get the caption and any reusable
+asset file.
+
+**Real demo asset.** `src/seeds/demo.ts` attaches a real bundled image
+(`media/assets/zilly_mascot.png`) to the `08_victory_jump` clip so the full
+file-retrieval path can be demonstrated end-to-end with an actual file. The local
+web console serves files from `media/` (path-traversal guarded) and previews
+images inline in the verdict.
 
 The pipeline **short-circuits** at the first gate that stops the request, and
 every run returns a **gate-by-gate audit trail** so you can see exactly where and

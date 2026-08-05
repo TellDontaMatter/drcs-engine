@@ -10,6 +10,8 @@
  * Uses only the Node standard library (no web framework dependency).
  */
 import * as http from 'http';
+import * as fs from 'fs';
+import * as path from 'path';
 import { evaluate, evaluatePrompt, EvaluationRequest } from '../orchestrator';
 import * as categorySchema from '../persistence/repositories/categorySchema';
 import { AssetTag } from '../types';
@@ -24,6 +26,26 @@ function sendJson(res: http.ServerResponse, status: number, body: unknown): void
     'Content-Length': Buffer.byteLength(payload),
   });
   res.end(payload);
+}
+
+/** Content-Type for a served media file, by extension. */
+function contentTypeFor(filePath: string): string {
+  const ext = path.extname(filePath).toLowerCase();
+  switch (ext) {
+    case '.png':
+      return 'image/png';
+    case '.jpg':
+    case '.jpeg':
+      return 'image/jpeg';
+    case '.gif':
+      return 'image/gif';
+    case '.webp':
+      return 'image/webp';
+    case '.mp4':
+      return 'video/mp4';
+    default:
+      return 'application/octet-stream';
+  }
 }
 
 function readBody(req: http.IncomingMessage): Promise<string> {
@@ -155,6 +177,34 @@ const server = http.createServer(async (req, res) => {
           error: err instanceof Error ? err.message : 'evaluation failed',
         });
       }
+      return;
+    }
+
+    // Serve a generated/registered media file for inline preview. Only files
+    // under the repo's media/ directory are served; the path is normalised and
+    // checked to stay inside that root (guards against path traversal).
+    if (req.method === 'GET' && req.url?.startsWith('/media/')) {
+      const url = new URL(req.url, `http://localhost:${PORT}`);
+      const rel = decodeURIComponent(url.pathname.replace(/^\/media\//, ''));
+      const mediaRoot = path.resolve(process.cwd(), 'media');
+      const abs = path.resolve(mediaRoot, rel);
+      if (!abs.startsWith(mediaRoot + path.sep)) {
+        res.writeHead(403, { 'Content-Type': 'text/plain' });
+        res.end('Forbidden');
+        return;
+      }
+      fs.readFile(abs, (err, data) => {
+        if (err) {
+          res.writeHead(404, { 'Content-Type': 'text/plain' });
+          res.end('Not found');
+          return;
+        }
+        res.writeHead(200, {
+          'Content-Type': contentTypeFor(abs),
+          'Content-Length': data.length,
+        });
+        res.end(data);
+      });
       return;
     }
 
@@ -362,10 +412,25 @@ function render(v) {
   kv.push('<b>Committed:</b> '+(v.committed?'yes (deployment logged)':'no'));
   if (v.deployment_id) kv.push('<b>Deployment id:</b> '+esc(v.deployment_id));
   if (v.governance_record_id) kv.push('<b>Governance record:</b> '+esc(v.governance_record_id));
+
+  // Inline preview when the file is an image the server can serve from media/.
+  let preview = '';
+  if (v.file_path) {
+    const fp = String(v.file_path);
+    const m = fp.match(/\\.([a-z0-9]+)$/i);
+    const ext = m ? m[1].toLowerCase() : '';
+    const isImg = ['png','jpg','jpeg','gif','webp'].indexOf(ext) !== -1;
+    if (isImg && fp.indexOf('media/') !== -1) {
+      const rel = fp.slice(fp.indexOf('media/') + 'media/'.length);
+      preview = '<div class="preview"><img alt="generated media preview" src="/media/'+
+        rel.split('/').map(encodeURIComponent).join('/')+'"/></div>';
+    }
+  }
+
   document.getElementById('result').innerHTML =
     '<div class="verdict"><span class="badge '+v.decision+'">'+v.decision+'</span>'+
     '<h2>'+esc(v.outcome)+'</h2><div class="reason">'+esc(v.reason)+'</div>'+
-    '<div class="kv">'+kv.join(' &nbsp;·&nbsp; ')+'</div></div>'+
+    '<div class="kv">'+kv.join(' &nbsp;·&nbsp; ')+'</div>'+preview+'</div>'+
     '<div class="trail">'+steps+'</div>'+
     '<details><summary>Raw verdict JSON</summary><pre>'+esc(JSON.stringify(v,null,2))+'</pre></details>';
 }

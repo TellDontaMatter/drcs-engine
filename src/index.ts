@@ -14,3 +14,11 @@ export * as c6 from './gates/c6';
 export * as assets from './assets';
 export * as llm from './llm';
 export * as orchestrator from './orchestrator';
+export {
+  MediaGenerator,
+  MediaGenerationInput,
+  NullMediaGenerator,
+  setMediaGenerator,
+  getMediaGenerator,
+  resetMediaGenerator,
+} from './media';

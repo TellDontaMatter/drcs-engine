@@ -54,6 +54,17 @@ export async function seedDemo(): Promise<void> {
       asset_list: merged,
     });
   }
+
+  // Attach ONE real media file so the end-to-end file-retrieval path can be
+  // demonstrated with an actual file on disk (not just a null placeholder).
+  // The victory clip points at the bundled zilly mascot image. This is the only
+  // asset with a real file; all others keep file_path null until real clips are
+  // mapped in. Path is repo-relative so it resolves from the project root.
+  await assetRegistry.updateFilePath(
+    ZILLY_TENANT_ID,
+    '08_victory_jump',
+    'media/assets/zilly_mascot.png',
+  );
 }
 
 if (require.main === module) {

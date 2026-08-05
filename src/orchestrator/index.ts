@@ -39,6 +39,7 @@ import * as usageLog from '../persistence/repositories/usageLog';
 import * as assetRegistry from '../persistence/repositories/assetRegistry';
 import * as assets from '../assets';
 import * as llm from '../llm';
+import { getMediaGenerator } from '../media';
 
 /** The gates the orchestrator runs, in order. */
 export type GateId = 'C6' | 'C2' | 'C4' | 'C5' | 'C3';
@@ -327,6 +328,26 @@ export async function evaluate(
       resolvedAssetId = paired.asset_id;
       base.asset_id = paired.asset_id;
       base.file_path = paired.file_path;
+    }
+
+    // Optionally CREATE fresh media for the generated caption via the pluggable
+    // media provider. By default this is the NullMediaGenerator (no runtime
+    // image backend is bundled), which returns null — so we keep the reused
+    // asset file above and never fail. An operator who injects a real generator
+    // (setMediaGenerator) gets a brand-new file here that overrides the reuse.
+    try {
+      const created = await getMediaGenerator().generate({
+        tenant_id,
+        caption: c5.caption,
+        category: categoryResult.category_id,
+        asset_recommendation: c5.asset_recommendation,
+      });
+      if (created?.file_path) {
+        base.file_path = created.file_path;
+      }
+    } catch {
+      // A misbehaving injected generator must not sink the request; we already
+      // have the caption (+ any reused asset file). Swallow and continue.
     }
   }
 
