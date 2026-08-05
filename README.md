@@ -5,15 +5,16 @@ fully multi-tenant. Every gate is a standalone, independently-invocable, pure-is
 function whose behavior is driven by per-tenant **configuration**, never by hardcoded
 tenant/asset identifiers.
 
-This repository currently implements **Section 20, steps 1–4** of the approved
+This repository currently implements **Section 20, steps 1–5** of the approved
 blueprint:
 
 1. **C1 — Source of Truth Lock** (the foundation gate)
 2. **The tenant-scoped persistence layer** (all six Section 14 data schemas)
 3. **C6 — Message-Idea Governance** (the runtime entry point; produces a disposition + record)
 4. **C2 — Situational Bank** (resolves a situational category from a real-time signal)
+5. **C3 — Repetition Governor** (enforces per-asset deployment frequency caps over a rolling window)
 
-The remaining gates (C3, C4, C5, C7, C8) are intentionally not yet implemented —
+The remaining gates (C4, C5, C7, C8) are intentionally not yet implemented —
 they come later in the blueprint implementation sequence.
 
 ---
@@ -31,10 +32,12 @@ src/
 │       ├── gateState.ts           # Per-tenant/per-gate freeze state
 │       ├── categorySchema.ts      # Situational taxonomy (C2)
 │       ├── proposalApprovalLog.ts # Proposal/Approval log (C7) — APPEND-ONLY
-│       └── governanceRecord.ts    # Governance Record (C6) — historically queryable
+│       ├── governanceRecord.ts    # Governance Record (C6) — historically queryable
+│       └── usageLog.ts            # Deployment usage log (C3) — append-only, tenant-scoped
 ├── gates/
 │   ├── c1/                    # C1 — Source of Truth Lock
 │   ├── c2/                    # C2 — Situational Bank
+│   ├── c3/                    # C3 — Repetition Governor
 │   └── c6/                    # C6 — Message-Idea Governance
 ├── seeds/
 │   └── zilly.ts               # Zilly reference-deployment seed (first tenant)
@@ -174,6 +177,48 @@ Momentum, Chaos, Comic Relief, **Adversity** (empty by design — `prestocked_fl
 false`), Victory, Transition/Pivot, Weather-Specific, **Friday** (`protected_flag:
 true` — never downgraded/substituted). A resolved protected category is returned
 exactly as-is; the gate performs no downgrade of a resolved category.
+
+---
+
+## C3 — Repetition Governor
+
+```ts
+checkRepetition(asset_id: string, tenant_params: RepetitionParams)
+  => Promise<{ allowed: boolean; current_count: number; window_remaining_ms: number;
+               failed_closed: boolean; reason: string }>
+```
+
+C3 enforces how often a single asset may be deployed inside a rolling time window.
+It reads the append-only `UsageLog` and decides whether one more deployment of
+`asset_id` is permitted right now.
+
+**Locked parameters (per the C3 contract):**
+
+| Param | Value | Meaning |
+|-------|-------|---------|
+| `max_count` | `3` | at most 3 deployments per asset within the window |
+| `rolling_window_days` | `30` | window is the trailing 30 days from *now* |
+| `counting_unit` | `per_deployment_instance` | **every** deployment counts, regardless of situational category |
+
+`C3_LOCKED_PARAMS` is exported from `src/types` so the contract values live in exactly
+one place. `counting_unit` being *per deployment instance* means the same asset
+deployed into two different categories still consumes two of its three slots — the
+governor counts raw deployments, not distinct categories.
+
+- `current_count` = deployments of the asset in the trailing window.
+- `allowed` = `current_count < max_count`.
+- `window_remaining_ms` = time until the engine would next permit a deployment; i.e.
+  how long until enough of the oldest in-window deployments age past the window to
+  drop the count below `max_count`. It is `0` whenever `allowed` is `true`.
+
+**Fail-closed (binding):** any log-integrity problem returns `allowed: false` with
+`failed_closed: true` rather than risking an over-deployment. The gate fails closed on
+a query error, a missing or unparseable `deployed_at`, a **future-dated** row
+(clock/tamper signal), or invalid parameters. Fail-closed results carry a `reason`
+explaining the trip.
+
+`now` is injectable via `tenant_params.now` purely so tests are deterministic; in
+production it defaults to the real clock.
 
 ---
 

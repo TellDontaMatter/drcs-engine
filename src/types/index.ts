@@ -254,6 +254,68 @@ export interface SelectCategoryResult {
   reason: string;
 }
 
+/* ────────────────────────────────────────────────────────────────────────
+ * C3 — REPETITION GOVERNOR
+ * Enforces max_count within a rolling_window, counted per deployment instance
+ * (regardless of category). Blueprint locked params: max_count=3,
+ * rolling_window=30 days, counting_unit=per deployment instance.
+ * Contract (Section 17): check_repetition(asset_id, tenant_params)
+ *   -> { allowed, current_count, window_remaining }.
+ * Fails CLOSED on any usage-log integrity issue.
+ * ──────────────────────────────────────────────────────────────────────── */
+
+/** The counting unit for repetition. Locked to per-deployment-instance. */
+export const CountingUnit = {
+  /** Every deployment instance of the asset counts, regardless of category. */
+  PER_DEPLOYMENT_INSTANCE: 'per_deployment_instance',
+} as const;
+
+export type CountingUnit = (typeof CountingUnit)[keyof typeof CountingUnit];
+
+/** Blueprint-locked C3 parameters (the defaults applied when omitted). */
+export const C3_LOCKED_PARAMS = {
+  max_count: 3,
+  rolling_window_days: 30,
+  counting_unit: CountingUnit.PER_DEPLOYMENT_INSTANCE,
+} as const;
+
+/**
+ * Tenant parameters for C3.checkRepetition() (the `tenant_params` contract arg).
+ * `tenant_id` scopes the usage log. The numeric params default to the blueprint
+ * locked values; `now` is injectable purely so the rolling window is testable
+ * (it defaults to the real wall clock — unlike C2, C3 legitimately uses time).
+ */
+export interface RepetitionParams {
+  tenant_id: string;
+  /** Max deployments permitted within the window. Default: 3. */
+  max_count?: number;
+  /** Rolling window length in days. Default: 30. */
+  rolling_window_days?: number;
+  /** Injectable "now" for deterministic tests. Default: new Date(). */
+  now?: Date;
+}
+
+/**
+ * Result of C3.checkRepetition().
+ * Blueprint Section 17: -> { allowed, current_count, window_remaining }.
+ */
+export interface RepetitionResult {
+  /** Whether one more deployment is permitted (current_count < max_count). */
+  allowed: boolean;
+  /** Number of in-window deployment instances counted for this asset. */
+  current_count: number;
+  /**
+   * Milliseconds the caller must wait before a deployment would be allowed
+   * again. 0 when already allowed; when blocked, the time until enough of the
+   * oldest in-window deployments age out of the window to drop below max_count.
+   */
+  window_remaining_ms: number;
+  /** Whether the gate failed closed due to a usage-log integrity issue. */
+  failed_closed: boolean;
+  /** Human-readable explanation (always populated). */
+  reason: string;
+}
+
 /** A single anomaly discovered by the canonical integrity audit. */
 export interface AuditFinding {
   asset_id: string;
