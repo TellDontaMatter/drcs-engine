@@ -98,17 +98,17 @@ model UsageLog {
 
 /// Governance Record — used by C6. Access restricted to a tenant's own approvers.
 model GovernanceRecord {
-  id                    String   @id @default(uuid())
-  tenant_id             String
-  condition             String
-  confidence_tag        String?
-  register              String?
-  shift_strength        String?
-  allowed_to_acknowledge Boolean @default(false)
-  must_not_presume      Boolean  @default(false)
-  belongs_here          Boolean  @default(false)
-  disposition           String?
-  created_at            DateTime @default(now())
+  id                     String   @id @default(uuid())
+  tenant_id              String
+  condition              String
+  confidence_tag         String?
+  register               String?
+  shift_strength         String?
+  allowed_to_acknowledge String?  // What this record is explicitly allowed to acknowledge (descriptive content)
+  must_not_presume       String?  // What must NOT be assumed (descriptive content)
+  belongs_here           Boolean  @default(false)
+  disposition            String?
+  created_at             DateTime @default(now())
 
   @@index([tenant_id])
 }

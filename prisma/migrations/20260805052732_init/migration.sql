@@ -61,8 +61,8 @@ CREATE TABLE "GovernanceRecord" (
     "confidence_tag" TEXT,
     "register" TEXT,
     "shift_strength" TEXT,
-    "allowed_to_acknowledge" BOOLEAN NOT NULL DEFAULT false,
-    "must_not_presume" BOOLEAN NOT NULL DEFAULT false,
+    "allowed_to_acknowledge" TEXT,
+    "must_not_presume" TEXT,
     "belongs_here" BOOLEAN NOT NULL DEFAULT false,
     "disposition" TEXT,
     "created_at" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -121,4 +121,3 @@ CREATE INDEX "ProposalApprovalLog_tenant_id_idx" ON "ProposalApprovalLog"("tenan
 
 -- CreateIndex
 CREATE INDEX "AgentConfiguration_tenant_id_idx" ON "AgentConfiguration"("tenant_id");
-
