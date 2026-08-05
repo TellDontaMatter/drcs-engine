@@ -11,3 +11,4 @@ prisma/*.db-journal
 
 # Env
 .env.local
+.abacus.donotdelete
