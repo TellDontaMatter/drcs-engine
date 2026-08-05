@@ -10,7 +10,7 @@
  * Uses only the Node standard library (no web framework dependency).
  */
 import * as http from 'http';
-import { evaluate, EvaluationRequest } from '../orchestrator';
+import { evaluate, evaluatePrompt, EvaluationRequest } from '../orchestrator';
 import * as categorySchema from '../persistence/repositories/categorySchema';
 import { AssetTag } from '../types';
 
@@ -99,6 +99,33 @@ const server = http.createServer(async (req, res) => {
           assets: c.asset_list.length,
         })),
       });
+      return;
+    }
+
+    // Simplified single-prompt entry point: { tenant_id, prompt } -> verdict.
+    if (req.method === 'POST' && req.url === '/api/evaluate-prompt') {
+      const raw = await readBody(req);
+      let body: Record<string, unknown>;
+      try {
+        body = raw ? JSON.parse(raw) : {};
+      } catch {
+        sendJson(res, 400, { error: 'invalid JSON body' });
+        return;
+      }
+      const tenant_id = String(body.tenant_id || DEFAULT_TENANT);
+      const prompt = String(body.prompt || '').trim();
+      if (!prompt) {
+        sendJson(res, 400, { error: 'prompt is required' });
+        return;
+      }
+      try {
+        const verdict = await evaluatePrompt(tenant_id, prompt);
+        sendJson(res, 200, verdict);
+      } catch (err) {
+        sendJson(res, 500, {
+          error: err instanceof Error ? err.message : 'evaluation failed',
+        });
+      }
       return;
     }
 
@@ -193,48 +220,68 @@ const PAGE_HTML = /* html */ `<!doctype html>
 <body>
 <header>
   <h1>DRCS Engine — Console</h1>
-  <p>Submit a content request and watch it flow through the gate pipeline: C6 → C2 → C4 → C3 → verdict.</p>
+  <p>Give the engine an idea and watch it flow through the gate pipeline: C6 → C2 → C4 → C5 → C3 → verdict.</p>
 </header>
 <div class="wrap">
-  <form class="form" id="f">
-    <label>Tenant</label>
-    <input id="tenant_id" value="zilly" />
+  <div class="form">
+    <form id="pf">
+      <label>Tenant</label>
+      <input id="p_tenant_id" value="zilly" />
 
-    <label>Situational condition (C6) *</label>
-    <textarea id="condition" placeholder="e.g. It's a chaotic Monday launch morning">It's the start of a gentle morning session</textarea>
+      <label>What's your idea?</label>
+      <textarea id="prompt" style="min-height:120px" placeholder="e.g. We just smashed our biggest milestone ever — hype clip!">We just smashed our biggest milestone ever — let's celebrate!</textarea>
 
-    <div class="row">
-      <div><label>Confidence</label>
-        <select id="confidence_tag"><option value="">(default: medium)</option>
-          <option>high</option><option>medium</option><option>low</option><option>ambiguous</option></select></div>
-      <div><label>Stakes</label>
-        <select id="stakes"><option value="">(default: low)</option><option>low</option><option>high</option></select></div>
-    </div>
-    <div class="row">
-      <div><label>Reviewer directive</label>
-        <select id="reviewer_directive"><option value="">(none)</option><option value="reject">reject</option><option value="hold">hold</option></select></div>
-      <div><label>Belongs here?</label>
-        <select id="belongs_here"><option value="">(default: yes)</option><option value="true">yes</option><option value="false">no</option></select></div>
-    </div>
+      <button type="submit">Make content from this idea</button>
+      <p class="muted" style="font-size:12px;margin-top:10px">
+        The engine reads your idea, governs it (C6), picks a situational bank (C2),
+        reuses a matching clip (C4) or generates a fresh caption (C5), and checks
+        repetition (C3) — ending in one verdict.
+      </p>
+    </form>
 
-    <label>Category (C2)</label>
-    <select id="category_id"><option value="">— pick a category —</option></select>
-    <label>…or situation label (if no category picked)</label>
-    <input id="situation" placeholder="e.g. Gentle Start" />
+    <details style="margin-top:22px">
+      <summary>Advanced — supply the gate fields manually</summary>
+      <form id="f" style="margin-top:12px">
+        <label>Tenant</label>
+        <input id="tenant_id" value="zilly" />
 
-    <label>Caption needed (C4) *</label>
-    <textarea id="caption" placeholder="The caption this deployment needs">Ease into it — double bounce to start.</textarea>
+        <label>Situational condition (C6) *</label>
+        <textarea id="condition" placeholder="e.g. It's a chaotic Monday launch morning">It's the start of a gentle morning session</textarea>
 
-    <div class="row">
-      <div><label>Required tag</label>
-        <select id="required_tag"><option value="">(any)</option><option value="canonical">canonical</option>
-          <option value="derivative_edit">derivative_edit</option><option value="derivative_new">derivative_new</option></select></div>
-      <div><label>Commit deployment?</label>
-        <select id="commit"><option value="true">yes (log it — counts toward C3)</option><option value="false">no (dry run)</option></select></div>
-    </div>
+        <div class="row">
+          <div><label>Confidence</label>
+            <select id="confidence_tag"><option value="">(default: medium)</option>
+              <option>high</option><option>medium</option><option>low</option><option>ambiguous</option></select></div>
+          <div><label>Stakes</label>
+            <select id="stakes"><option value="">(default: low)</option><option>low</option><option>high</option></select></div>
+        </div>
+        <div class="row">
+          <div><label>Reviewer directive</label>
+            <select id="reviewer_directive"><option value="">(none)</option><option value="reject">reject</option><option value="hold">hold</option></select></div>
+          <div><label>Belongs here?</label>
+            <select id="belongs_here"><option value="">(default: yes)</option><option value="true">yes</option><option value="false">no</option></select></div>
+        </div>
 
-    <button type="submit">Run through the engine</button>
-  </form>
+        <label>Category (C2)</label>
+        <select id="category_id"><option value="">— pick a category —</option></select>
+        <label>…or situation label (if no category picked)</label>
+        <input id="situation" placeholder="e.g. Gentle Start" />
+
+        <label>Caption needed (C4) *</label>
+        <textarea id="caption" placeholder="The caption this deployment needs">Ease into it — double bounce to start.</textarea>
+
+        <div class="row">
+          <div><label>Required tag</label>
+            <select id="required_tag"><option value="">(any)</option><option value="canonical">canonical</option>
+              <option value="derivative_edit">derivative_edit</option><option value="derivative_new">derivative_new</option></select></div>
+          <div><label>Commit deployment?</label>
+            <select id="commit"><option value="true">yes (log it — counts toward C3)</option><option value="false">no (dry run)</option></select></div>
+        </div>
+
+        <button type="submit">Run through the engine</button>
+      </form>
+    </details>
+  </div>
 
   <div class="result" id="result">
     <div class="empty">Submit a request to see the verdict and the gate-by-gate trail.</div>
@@ -242,7 +289,7 @@ const PAGE_HTML = /* html */ `<!doctype html>
 </div>
 
 <script>
-const GATES = ['C6','C2','C4','C3'];
+const GATES = ['C6','C2','C4','C5','C3'];
 async function loadCategories() {
   const t = document.getElementById('tenant_id').value || 'zilly';
   try {
@@ -257,6 +304,21 @@ document.getElementById('tenant_id').addEventListener('change', loadCategories);
 loadCategories();
 
 function esc(s){ return String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+
+// Simplified single-prompt submit → /api/evaluate-prompt.
+document.getElementById('pf').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const body = {
+    tenant_id: document.getElementById('p_tenant_id').value || 'zilly',
+    prompt: document.getElementById('prompt').value,
+  };
+  const res = document.getElementById('result');
+  res.innerHTML = '<div class="empty">Reading your idea and running the engine…</div>';
+  const r = await fetch('/api/evaluate-prompt', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+  const v = await r.json();
+  if (v.error) { res.innerHTML = '<div class="verdict"><span class="badge BLOCKED">ERROR</span><p class="reason">'+esc(v.error)+'</p></div>'; return; }
+  render(v);
+});
 
 document.getElementById('f').addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -286,12 +348,16 @@ function render(v) {
     const t = byGate[gid];
     let cls, mark, name, summ;
     if (t) { cls = t.passed ? 'pass' : 'stop'; mark = t.passed ? '✓' : '✕'; name = t.name; summ = t.summary; }
-    else { cls='skip'; mark='–'; name=({C6:'Message-Idea Governance',C2:'Situational Bank',C4:'Caption-First Resolution',C3:'Repetition Governor'})[gid]; summ = i>stoppedIdx ? 'not reached (pipeline already stopped)' : ''; }
+    else { cls='skip'; mark='–'; name=({C6:'Message-Idea Governance',C2:'Situational Bank',C4:'Caption-First Resolution',C5:'Misalignment Protocol',C3:'Repetition Governor'})[gid]; summ = i>stoppedIdx ? 'not reached (pipeline already stopped)' : ''; }
     steps += '<div class="step"><div class="dot '+cls+'">'+mark+'</div><div><div class="g">'+gid+' <span class="n">'+esc(name)+'</span></div><div class="s">'+esc(summ)+'</div></div></div>';
   });
   const kv = [];
+  if (v.caption) kv.push('<b>Final caption:</b> '+esc(v.caption));
+  if (v.source) kv.push('<b>Source:</b> '+esc(v.source));
   if (v.asset_id) kv.push('<b>Asset:</b> '+esc(v.asset_id));
-  if (v.caption) kv.push('<b>Caption:</b> '+esc(v.caption));
+  if (v.file_path) kv.push('<b>File:</b> '+esc(v.file_path));
+  else if (v.asset_id) kv.push('<b>File:</b> <span class="muted">(no media file attached yet)</span>');
+  if (v.asset_recommendation) kv.push('<b>Suggested asset:</b> '+esc(v.asset_recommendation));
   if (v.resolution_step) kv.push('<b>Step:</b> '+esc(v.resolution_step));
   kv.push('<b>Committed:</b> '+(v.committed?'yes (deployment logged)':'no'));
   if (v.deployment_id) kv.push('<b>Deployment id:</b> '+esc(v.deployment_id));

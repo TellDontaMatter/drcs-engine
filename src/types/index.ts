@@ -426,3 +426,64 @@ export interface ResolveEscalated {
  * both present as a superset with `resolution_step` + `reason` for observability.
  */
 export type ResolveResult = ResolveResolved | ResolveEscalated;
+
+/* ────────────────────────────────────────────────────────────────────────
+ * C5 — MISALIGNMENT PROTOCOL
+ * Fires only when C4 escalates (no reusable asset satisfied the need). Rather
+ * than fail the request, C5 GENERATES fresh content: it asks the LLM for a new
+ * caption tailored to the situation + category, and recommends the kind of
+ * asset that would pair with it. If the LLM is unreachable it fails explicitly
+ * (ESCALATE_FAILED) — it never fabricates a silent fallback.
+ * ──────────────────────────────────────────────────────────────────────── */
+
+/** The two terminal actions C5 can return. */
+export const C5Action = {
+  /** A fresh caption was generated (+ an asset recommendation). */
+  GENERATED: 'GENERATED',
+  /** Generation could not complete (e.g. the LLM was unreachable). */
+  ESCALATE_FAILED: 'ESCALATE_FAILED',
+} as const;
+
+export type C5Action = (typeof C5Action)[keyof typeof C5Action];
+
+/** Input to C5.generate(). */
+export interface C5Request {
+  tenant_id: string;
+  /** The raw situational read (from the trigger / prompt). */
+  situation: string;
+  /** The category C2 resolved (context for the generated caption). */
+  category: string;
+  /** The kind of content requested (e.g. "clip", "image", "post"). */
+  content_type: string;
+}
+
+/** C5 successfully generated fresh content. */
+export interface C5Generated {
+  action: 'GENERATED';
+  /** The freshly generated caption. */
+  caption: string;
+  /** A brief description of the clip/image that would pair well. */
+  asset_recommendation: string;
+}
+
+/** C5 could not generate (LLM error / empty response). */
+export interface C5Failed {
+  action: 'ESCALATE_FAILED';
+  /** Human-readable explanation of why generation failed. */
+  reason: string;
+}
+
+/** Result of C5.generate(). Discriminated union on `action`. */
+export type C5Result = C5Generated | C5Failed;
+
+/**
+ * Where a deployment's final caption came from, end-to-end. `AS_IS` and
+ * `RECAPTIONED` come from C4; `GENERATED` comes from C5.
+ */
+export const CaptionSource = {
+  AS_IS: 'AS_IS',
+  RECAPTIONED: 'RECAPTIONED',
+  GENERATED: 'GENERATED',
+} as const;
+
+export type CaptionSource = (typeof CaptionSource)[keyof typeof CaptionSource];
