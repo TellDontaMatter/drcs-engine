@@ -7,3 +7,4 @@ export * as assetRegistry from './repositories/assetRegistry';
 export * as tenantConfig from './repositories/tenantConfig';
 export * as gateState from './repositories/gateState';
 export * as proposalApprovalLog from './repositories/proposalApprovalLog';
+export * as governanceRecord from './repositories/governanceRecord';
