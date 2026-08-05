@@ -5,16 +5,82 @@ fully multi-tenant. Every gate is a standalone, independently-invocable, pure-is
 function whose behavior is driven by per-tenant **configuration**, never by hardcoded
 tenant/asset identifiers.
 
-This repository currently implements **Section 20, steps 1–4** of the approved
-blueprint:
+This repository currently implements **Section 20, steps 1–6** of the approved
+blueprint, plus an **orchestrator** and **two usable surfaces** (web console + CLI)
+that tie the individual gates into one runnable engine:
 
 1. **C1 — Source of Truth Lock** (the foundation gate)
 2. **The tenant-scoped persistence layer** (all six Section 14 data schemas)
-3. **C6 — Message-Idea Governance** (the runtime entry point; produces a disposition + record)
+3. **C6 — Message-Idea Governance** (runs first; produces a disposition + record)
 4. **C2 — Situational Bank** (resolves a situational category from a real-time signal)
+5. **C3 — Repetition Governor** (enforces per-asset frequency caps over a rolling window)
+6. **C4 — Caption-First Resolution** (reuses existing content via a strict 3-step ladder)
 
-The remaining gates (C3, C4, C5, C7, C8) are intentionally not yet implemented —
-they come later in the blueprint implementation sequence.
+Plus the layer that makes it usable:
+
+- **Orchestrator** (`src/orchestrator`) — `evaluate(request, tenant_id)` runs the
+  gates in blueprint order (**C6 → C2 → C4 → C3**), short-circuits at the first
+  gate that stops the request, enforces each decision (no silent downgrade),
+  commits side effects only on PUBLISH, and returns **one verdict + a
+  gate-by-gate audit trail**.
+- **Web console** (`src/server`) — a local page where you submit a request and
+  watch it flow through the gates.
+- **CLI** (`src/cli`) — the same engine from the command line.
+
+The remaining gates (C5, C7, C8) are intentionally not yet implemented — they
+come later in the blueprint sequence. A C4 escalation currently ends the
+pipeline with outcome `ESCALATED_TO_C5` (the C5 hand-off lands with that gate).
+
+---
+
+## Use it yourself (2 minutes)
+
+```bash
+npm install
+npx prisma db push        # create the local SQLite dev DB
+npm run seed:zilly        # seed the Zilly tenant (canonical clips + taxonomy)
+npm run seed:demo         # OPTIONAL: illustrative clip→category assignments so a
+                          # full PUBLISH is reachable (NOT the canonical mapping)
+npm run serve             # open http://localhost:3000
+```
+
+Then open **http://localhost:3000**, fill in a situational condition + caption,
+pick a category, and click **Run through the engine**. You'll see the verdict
+(PUBLISH / BLOCKED), the specific outcome, and every gate's decision.
+
+> ⚠️ `seed:demo` is **illustrative only** — it assigns a few canonical clips to
+> categories with sample captions purely so the pipeline can reach a PUBLISH.
+> The real Zilly clip→category mapping and per-clip captions are a pending human
+> decision and are **not** encoded anywhere in this repo.
+
+Prefer the command line?
+
+```bash
+npm run evaluate -- --tenant zilly \
+  --condition "gentle morning session" \
+  --category gentle_start \
+  --caption "Ease into it — double bounce to start."
+# add --dry-run to preview without logging a deployment
+# add --reviewer reject|hold to exercise the C6 governance stops
+```
+
+Or call it in code:
+
+```ts
+import { orchestrator } from 'drcs-engine';
+
+const verdict = await orchestrator.evaluate(
+  {
+    trigger: { condition: 'gentle morning session' },
+    condition_signal: { category_id: 'gentle_start' },
+    content_need: { caption: 'Ease into it — double bounce to start.' },
+  },
+  'zilly',
+);
+// verdict.decision -> 'PUBLISH' | 'BLOCKED'
+// verdict.outcome  -> PUBLISHED | GOVERNANCE_REJECTED | NO_CATEGORY | ESCALATED_TO_C5 | REPETITION_BLOCKED | ...
+// verdict.trail    -> gate-by-gate audit trail
+```
 
 ---
 
@@ -31,18 +97,25 @@ src/
 │       ├── gateState.ts           # Per-tenant/per-gate freeze state
 │       ├── categorySchema.ts      # Situational taxonomy (C2)
 │       ├── proposalApprovalLog.ts # Proposal/Approval log (C7) — APPEND-ONLY
-│       └── governanceRecord.ts    # Governance Record (C6) — historically queryable
+│       ├── governanceRecord.ts    # Governance Record (C6) — historically queryable
+│       └── usageLog.ts            # Deployment usage log (C3) — append-only, tenant-scoped
 ├── gates/
 │   ├── c1/                    # C1 — Source of Truth Lock
 │   ├── c2/                    # C2 — Situational Bank
+│   ├── c3/                    # C3 — Repetition Governor
+│   ├── c4/                    # C4 — Caption-First Resolution
 │   └── c6/                    # C6 — Message-Idea Governance
+├── orchestrator/             # evaluate() — runs the gate pipeline, returns a verdict + trail
+├── server/                   # Local web console (zero-dependency Node http server)
+├── cli/                      # Command-line surface
 ├── seeds/
-│   └── zilly.ts               # Zilly reference-deployment seed (first tenant)
+│   ├── zilly.ts               # Zilly reference-deployment seed (first tenant)
+│   └── demo.ts                # Illustrative clip→category assignments (NOT canonical)
 └── index.ts                   # Public entry point
 prisma/
 ├── schema.prisma              # All six Section 14 schemas + foundation tables
-└── migrations/0_init/         # Migration baseline
-tests/                         # Jest tests (Section 19 acceptance tests for C1)
+└── migrations/                # Migration baseline
+tests/                         # Jest tests (Section 19 acceptance tests + orchestrator e2e)
 ```
 
 ### Key design principles
@@ -174,6 +247,181 @@ Momentum, Chaos, Comic Relief, **Adversity** (empty by design — `prestocked_fl
 false`), Victory, Transition/Pivot, Weather-Specific, **Friday** (`protected_flag:
 true` — never downgraded/substituted). A resolved protected category is returned
 exactly as-is; the gate performs no downgrade of a resolved category.
+
+---
+
+## C3 — Repetition Governor
+
+```ts
+checkRepetition(asset_id: string, tenant_params: RepetitionParams)
+  => Promise<{ allowed: boolean; current_count: number; window_remaining_ms: number;
+               failed_closed: boolean; reason: string }>
+```
+
+C3 enforces how often a single asset may be deployed inside a rolling time window.
+It reads the append-only `UsageLog` and decides whether one more deployment of
+`asset_id` is permitted right now.
+
+**Locked parameters (per the C3 contract):**
+
+| Param | Value | Meaning |
+|-------|-------|---------|
+| `max_count` | `3` | at most 3 deployments per asset within the window |
+| `rolling_window_days` | `30` | window is the trailing 30 days from *now* |
+| `counting_unit` | `per_deployment_instance` | **every** deployment counts, regardless of situational category |
+
+`C3_LOCKED_PARAMS` is exported from `src/types` so the contract values live in exactly
+one place. `counting_unit` being *per deployment instance* means the same asset
+deployed into two different categories still consumes two of its three slots — the
+governor counts raw deployments, not distinct categories.
+
+- `current_count` = deployments of the asset in the trailing window.
+- `allowed` = `current_count < max_count`.
+- `window_remaining_ms` = time until the engine would next permit a deployment; i.e.
+  how long until enough of the oldest in-window deployments age past the window to
+  drop the count below `max_count`. It is `0` whenever `allowed` is `true`.
+
+**Fail-closed (binding):** any log-integrity problem returns `allowed: false` with
+`failed_closed: true` rather than risking an over-deployment. The gate fails closed on
+a query error, a missing or unparseable `deployed_at`, a **future-dated** row
+(clock/tamper signal), or invalid parameters. Fail-closed results carry a `reason`
+explaining the trip.
+
+`now` is injectable via `tenant_params.now` purely so tests are deterministic; in
+production it defaults to the real clock.
+
+## C4 — Caption-First Resolution
+
+```ts
+resolve(category_id: string, content_need: ContentNeed, tenant_id: string)
+  => Promise<
+       | { resolved: true;  escalate: false; asset_id: string; caption: string;
+           resolution_step: 'existing_as_is' | 'recaption'; reason: string }
+       | { resolved: false; escalate: true;  asset_id: null;   caption: null;
+           resolution_step: 'escalate_to_c5'; reason: string }
+     >
+```
+
+C4 satisfies a **content need** inside a category by *preferring reuse over
+creation*. It walks a **strict, never-skipped 3-step ladder** and stops at the
+first step that yields a usable asset:
+
+1. **existing-as-is** — an asset already in the category whose **current caption**
+   already satisfies the need → reuse it verbatim (returns the asset's own caption).
+2. **recaption** — an asset in the category is reusable but its caption does not
+   match → reuse the asset with the **needed** caption.
+3. **escalate to C5** — no reusable asset in the category → `{ escalate: true }`.
+
+**Never skip a step (binding):** recaption is only considered after the as-is scan
+finds nothing; escalation is only returned after both prior steps produce nothing.
+As-is always beats recaption, recaption always beats escalation — verified by
+ordering tests (an as-is match wins even when a recaption candidate is listed first).
+
+`content_need` carries the required `caption` plus optional `required_tag` and
+`exclude_asset_ids` filters (e.g. to drop assets an upstream gate like C3 already
+ruled out). Caption matching for the as-is step is case- and whitespace-insensitive.
+Resolution is deterministic: assets are considered in `asset_list` order.
+
+Invalid input throws rather than silently escalating: an empty `caption` throws
+`InvalidContentNeedError`, and an unknown category throws `CategoryNotFoundError`
+(distinct from a *known but empty* category, which legitimately escalates).
+
+**Caption storage (design decision — flagged for review):** the blueprint's
+caption-first contract implies a per-asset caption, but the Section 14 baseline had
+no caption field. C4 adds a nullable `caption` column to `AssetRegistry` (migration
+`20260805130000_c4_asset_caption`) and an `assetRegistry.updateCaption()` helper to
+persist an accepted recaption. `resolve()` itself is a **pure decision** (it does
+not mutate) — persisting a recaption is a downstream step.
+
+## Orchestrator — the engine that runs the gates
+
+```ts
+evaluate(request: EvaluationRequest, tenant_id: string)
+  => Promise<EvaluationVerdict>   // { decision, outcome, stopped_at_gate, asset_id,
+                                  //   caption, committed, reason, trail[] }
+```
+
+A gate on its own only *returns a decision* — nothing acts on it. The
+orchestrator is what a human (or an upstream system) actually calls. It runs the
+gates in the blueprint's binding order and **enforces** every decision:
+
+1. **C6** `govern(trigger)` — if the disposition is not `PUBLISH`, stop
+   (`GOVERNANCE_REJECTED` / `GOVERNANCE_HELD` / `GOVERNANCE_REROUTED`). A
+   protected disposition is **never** downgraded to keep cadence.
+2. **C2** `selectCategory(signal)` — if nothing resolves, stop (`NO_CATEGORY`).
+3. **C4** `resolve(category, need)` — reuse existing content (existing-as-is or
+   recaption). If there is nothing to reuse, hand off to **C5**.
+4. **C5** `generate(...)` — the Misalignment Protocol. Generates a fresh caption
+   (real text-LLM call) plus an `asset_recommendation`, then pairs it with a
+   reusable category asset/file when one exists and, if a media generator is
+   registered, creates a new media file (see **Media generation** below). If the
+   LLM is unreachable, stop (`ESCALATE_FAILED`) — no silent fallback.
+5. **C3** `checkRepetition(asset)` — if the rolling cap is hit or the log fails
+   integrity, stop (`REPETITION_BLOCKED` / `REPETITION_FAILED_CLOSED`).
+6. **PUBLISH / GENERATED** — all gates cleared. Unless `commit: false` (dry run),
+   the orchestrator persists a C4 recaption and appends the deployment instance
+   to the usage log (which C3 counts next time).
+
+The verdict carries `caption`, `source` (`AS_IS` / `RECAPTIONED` / `GENERATED`),
+`asset_id`, `file_path`, and `asset_recommendation` — so a caller gets the final
+caption **and** the media file to post, in one call.
+
+### Simplified input — one idea in
+
+```ts
+evaluatePrompt(tenant_id: string, prompt: string) => Promise<EvaluationVerdict>
+```
+
+Give it a single free-form idea (e.g. *"Zilly just hit a new PR"*); it uses the
+LLM to derive the `situation` + `content_type`, then runs the exact same
+pipeline above. This is the "make content out of any idea" entry point.
+
+---
+
+## Media generation
+
+Be clear about what is and isn't automatic:
+
+- **Captions are generated at runtime.** C5 calls a real text-LLM HTTP endpoint
+  (`src/llm`, RouteLLM). This works out of the box (`ABACUS_API_KEY`).
+- **Images/videos are NOT auto-generated out of the box.** The engine bundles no
+  runtime image backend, so it does not fabricate one. Instead, media generation
+  is a **pluggable provider** (`src/media`) that you inject.
+
+By default the engine uses `NullMediaGenerator`: on a C5 generation it returns
+the fresh caption + an `asset_recommendation` (a description of the visual that
+would fit) and reuses a registered asset file for the category if one exists — it
+never invents an image. To actually create new media, wrap your own backend
+(DALL·E, Stable Diffusion, Replicate, an internal render service, …) and register
+it once at startup:
+
+```ts
+import { setMediaGenerator } from 'drcs-engine';
+
+setMediaGenerator({
+  async generate({ tenant_id, caption, category, asset_recommendation }) {
+    // Call whatever image/video backend you have:
+    const file_path = await myBackend.render(asset_recommendation, caption);
+    return { file_path };          // return null to decline / on failure
+  },
+});
+```
+
+Once registered, the orchestrator calls it after C5 produces a caption and puts
+the resulting `file_path` on the verdict. A provider that returns `null` or
+throws never sinks the request — you still get the caption and any reusable
+asset file.
+
+**Real demo asset.** `src/seeds/demo.ts` attaches a real bundled image
+(`media/assets/zilly_mascot.png`) to the `08_victory_jump` clip so the full
+file-retrieval path can be demonstrated end-to-end with an actual file. The local
+web console serves files from `media/` (path-traversal guarded) and previews
+images inline in the verdict.
+
+The pipeline **short-circuits** at the first gate that stops the request, and
+every run returns a **gate-by-gate audit trail** so you can see exactly where and
+why a request was stopped. The web console and CLI are thin wrappers over this
+one function.
 
 ---
 
