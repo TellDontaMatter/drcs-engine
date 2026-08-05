@@ -5,14 +5,15 @@ fully multi-tenant. Every gate is a standalone, independently-invocable, pure-is
 function whose behavior is driven by per-tenant **configuration**, never by hardcoded
 tenant/asset identifiers.
 
-This repository currently implements **Section 20, steps 1 & 2** of the approved
+This repository currently implements **Section 20, steps 1–3** of the approved
 blueprint:
 
 1. **C1 — Source of Truth Lock** (the foundation gate)
 2. **The tenant-scoped persistence layer** (all six Section 14 data schemas)
+3. **C6 — Message-Idea Governance** (the runtime entry point; produces a disposition + record)
 
-Gates C2–C8 are intentionally not yet implemented — they come later in the blueprint
-implementation sequence.
+The remaining gates (C2, C3, C4, C5, C7, C8) are intentionally not yet implemented —
+they come later in the blueprint implementation sequence.
 
 ---
 
@@ -27,9 +28,11 @@ src/
 │       ├── assetRegistry.ts       # Asset Registry (C1, C2, C4, C5)
 │       ├── tenantConfig.ts        # Per-tenant config incl. quarantine list
 │       ├── gateState.ts           # Per-tenant/per-gate freeze state
-│       └── proposalApprovalLog.ts # Proposal/Approval log (C7) — APPEND-ONLY
+│       ├── proposalApprovalLog.ts # Proposal/Approval log (C7) — APPEND-ONLY
+│       └── governanceRecord.ts    # Governance Record (C6) — historically queryable
 ├── gates/
-│   └── c1/                    # C1 — Source of Truth Lock
+│   ├── c1/                    # C1 — Source of Truth Lock
+│   └── c6/                    # C6 — Message-Idea Governance
 ├── seeds/
 │   └── zilly.ts               # Zilly reference-deployment seed (first tenant)
 └── index.ts                   # Public entry point
@@ -94,6 +97,45 @@ Supporting operations:
   inconsistent. On any finding it **freezes** the gate for that tenant.
 - `isFrozen(tenant_id)` / `clearFreeze(tenant_id)` — inspect / clear the freeze after
   human-confirmed correction.
+
+---
+
+## C6 — Message-Idea Governance
+
+```ts
+govern(trigger: SituationalTrigger, tenant_id: string)
+  => Promise<{ disposition: Disposition; record: GovernanceRecordData }>
+```
+
+C6 **runs first**, upstream of all selection. It takes a raw situational trigger and
+produces both a structured governance **record** and one of **four explicit
+dispositions** (a four-state model, *not* pass/fail):
+
+| Disposition | Meaning |
+|-------------|---------|
+| `PUBLISH` | Governance passed — proceed downstream (to C2). |
+| `REJECT_AND_RECORD` | Definite no — logged with rationale, loop exits, no substitute generated. |
+| `REROUTE_FOR_RECLASSIFICATION` | Situational read likely wrong — needs a corrected C6 pass before re-entry. |
+| `HOLD_FOR_HUMAN_REVIEW` | Genuine ambiguity — loop pauses; never silently proceeds or rejects. |
+
+Disposition precedence inside `decideDisposition()` (pure, exported for testing):
+
+1. **REJECT** — explicit reviewer reject directive, or `appropriate === false`.
+2. **HOLD** — explicit hold directive, `confidence_tag === 'ambiguous'`, or
+   high-stakes + low-confidence.
+3. **REROUTE** — `belongs_here === false`.
+4. **PUBLISH** — otherwise.
+
+**Binding constraint (Section 7 — no silent downgrade):** steps 1–2 (the two
+*protected* dispositions) are evaluated first and return immediately, so cadence
+pressure can never turn a `REJECT`/`HOLD` into a `PUBLISH`/`REROUTE`. Silence is an
+acceptable outcome.
+
+The two Section 6 descriptive fields — `allowed_to_acknowledge` (what the message may
+acknowledge, e.g. *"it's late; the deadline is close"*) and `must_not_presume` (what it
+must not assume, e.g. *"that the student is panicking"*) — are stored as **text and are
+never null**. A record is written for **every** trigger, making governance decisions
+historically queryable per tenant via `governanceRecord.listRecords(tenant_id, filter?)`.
 
 ---
 

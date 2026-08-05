@@ -46,6 +46,147 @@ export interface ValidateResult {
   reason: string;
 }
 
+/* ────────────────────────────────────────────────────────────────────────
+ * C6 — MESSAGE-IDEA GOVERNANCE
+ * Blueprint Section 6 (structured record), Section 7 (four-disposition state
+ * model), Section 17 contract: govern(situational_trigger) -> {disposition, record}.
+ * ──────────────────────────────────────────────────────────────────────── */
+
+/**
+ * The four explicit C6 dispositions (Blueprint Section 7). This is a
+ * four-state model, NOT pass/fail. A non-PUBLISH disposition must never be
+ * silently downgraded to a lower-intensity one to preserve cadence.
+ */
+export const Disposition = {
+  /** Proceed downstream (to C2). */
+  PUBLISH: 'PUBLISH',
+  /** Logged with rationale; loop exits; no substitute generated. */
+  REJECT_AND_RECORD: 'REJECT_AND_RECORD',
+  /** Situational read likely wrong; requires a corrected C6 pass before re-entry. */
+  REROUTE_FOR_RECLASSIFICATION: 'REROUTE_FOR_RECLASSIFICATION',
+  /** Genuine ambiguity; loop pauses; never silently proceeds or rejects. */
+  HOLD_FOR_HUMAN_REVIEW: 'HOLD_FOR_HUMAN_REVIEW',
+} as const;
+
+export type Disposition = (typeof Disposition)[keyof typeof Disposition];
+
+/** Runtime type guard for {@link Disposition}. */
+export function isDisposition(value: unknown): value is Disposition {
+  return (
+    value === Disposition.PUBLISH ||
+    value === Disposition.REJECT_AND_RECORD ||
+    value === Disposition.REROUTE_FOR_RECLASSIFICATION ||
+    value === Disposition.HOLD_FOR_HUMAN_REVIEW
+  );
+}
+
+/** Is this a non-PUBLISH disposition (i.e. the loop does not proceed to C2)? */
+export function isNonPublish(disposition: Disposition): boolean {
+  return disposition !== Disposition.PUBLISH;
+}
+
+/**
+ * Is this one of the two "high-intensity" dispositions that must never be
+ * auto-downgraded to preserve cadence (Blueprint Section 7 binding constraint)?
+ */
+export function isProtectedDisposition(disposition: Disposition): boolean {
+  return (
+    disposition === Disposition.REJECT_AND_RECORD ||
+    disposition === Disposition.HOLD_FOR_HUMAN_REVIEW
+  );
+}
+
+/** Confidence in the situational read (Blueprint Section 6 confidence tag). */
+export const ConfidenceTag = {
+  HIGH: 'high',
+  MEDIUM: 'medium',
+  LOW: 'low',
+  AMBIGUOUS: 'ambiguous',
+} as const;
+
+export type ConfidenceTag = (typeof ConfidenceTag)[keyof typeof ConfidenceTag];
+
+/** Sensitivity/stakes of acting on the trigger. */
+export const Stakes = {
+  LOW: 'low',
+  HIGH: 'high',
+} as const;
+
+export type Stakes = (typeof Stakes)[keyof typeof Stakes];
+
+/**
+ * An optional explicit reviewer directive attached to a trigger. When present
+ * it is authoritative for the corresponding disposition (a human decision the
+ * gate must honor, never override).
+ */
+export const ReviewerDirective = {
+  REJECT: 'reject',
+  HOLD: 'hold',
+} as const;
+
+export type ReviewerDirective = (typeof ReviewerDirective)[keyof typeof ReviewerDirective];
+
+/**
+ * Raw situational trigger — the input to C6.govern().
+ *
+ * Only `condition` is required; every other signal is optional and has a
+ * documented, conservative default (see decideDisposition). The two descriptive
+ * fields carry the actual content the governed message is allowed to acknowledge
+ * and must not presume (Blueprint Section 6 — these are text, not flags).
+ */
+export interface SituationalTrigger {
+  /** Raw situational description (required). */
+  condition: string;
+  /** Confidence in the situational read. Default: 'medium'. */
+  confidence_tag?: ConfidenceTag;
+  /** Tone register the message would adopt. */
+  register?: string;
+  /** Strength of the situational shift ('none' | 'slight' | 'strong', free-form). */
+  shift_strength?: string;
+  /** Whether the situational read belongs in this bank/category. Default: true. */
+  belongs_here?: boolean;
+  /** Whether it is appropriate to act on this trigger at all. Default: true. */
+  appropriate?: boolean;
+  /** Sensitivity of acting. Default: 'low'. */
+  stakes?: Stakes;
+  /** Authoritative human directive, if any. Honored over derived signals. */
+  reviewer_directive?: ReviewerDirective | null;
+  /** Descriptive phrases the message is explicitly allowed to acknowledge. */
+  allowed_to_acknowledge?: string[];
+  /** Descriptive phrases the message must NOT presume. */
+  must_not_presume?: string[];
+}
+
+/**
+ * The structured governance record C6 produces for every trigger (Blueprint
+ * Section 6 / Section 14 GovernanceRecord schema). Persisted and historically
+ * queryable per tenant.
+ */
+export interface GovernanceRecordData {
+  id?: string;
+  tenant_id: string;
+  condition: string;
+  confidence_tag: string | null;
+  register: string | null;
+  shift_strength: string | null;
+  /** Descriptive text (never null once governed). */
+  allowed_to_acknowledge: string | null;
+  /** Descriptive text (never null once governed). */
+  must_not_presume: string | null;
+  belongs_here: boolean;
+  disposition: Disposition;
+  created_at?: Date;
+}
+
+/**
+ * Result of C6.govern().
+ * Blueprint Section 17: govern(situational_trigger) -> {disposition, record}.
+ */
+export interface GovernResult {
+  disposition: Disposition;
+  record: GovernanceRecordData;
+}
+
 /** A single anomaly discovered by the canonical integrity audit. */
 export interface AuditFinding {
   asset_id: string;
