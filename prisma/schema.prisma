@@ -1,0 +1,145 @@
+// DRCS Engine — Prisma schema
+// Blueprint Section 14 (Persistence Layer / Data Schemas) + Section 20 step 2.
+//
+// Database-agnostic design:
+//   * Local dev / test  -> SQLite  (no external services required)
+//   * Production        -> PostgreSQL (swap `provider` to "postgresql")
+//
+// Every model carries `tenant_id` for full tenant isolation (Security: cross-tenant
+// leakage is a failure condition). List-valued columns are stored as JSON-encoded
+// `String` (serialized/parsed in the repository layer) so the identical schema
+// compiles for both SQLite (local/test) and PostgreSQL (production).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Foundation tables (Section 20 step 2) — required to run C1 in a tenant-scoped,
+// configuration-driven way. These are NOT one of the six Section 14 schemas; they
+// hold per-tenant configuration (quarantine list) and per-gate freeze state.
+// ---------------------------------------------------------------------------
+
+/// Per-tenant configuration. `quarantine_list` is a JSON array of source
+/// identifiers (asset ids or Drive file ids) that C1 must reject derivation from.
+model TenantConfig {
+  tenant_id       String   @id
+  name            String
+  quarantine_list String   @default("[]")
+  created_at      DateTime @default(now())
+}
+
+/// Per-tenant, per-gate freeze state. When C1's canonical audit detects corruption
+/// the gate is frozen and validate() blocks until a human clears it.
+model GateState {
+  tenant_id     String
+  gate_id       String
+  frozen        Boolean   @default(false)
+  frozen_reason String?
+  frozen_at     DateTime?
+
+  @@id([tenant_id, gate_id])
+}
+
+// ---------------------------------------------------------------------------
+// Section 14 — Data Schemas (all six). Each is tenant-scoped.
+// ---------------------------------------------------------------------------
+
+/// Asset Registry — used by C1, C2, C4, C5.
+/// `tag` is one of: canonical | derivative_edit | derivative_new.
+/// `sealed_hash` records the content hash captured when an asset was locked; the
+/// canonical audit flags an asset as modified when `content_hash != sealed_hash`.
+model AssetRegistry {
+  tenant_id       String
+  asset_id        String
+  tag             String
+  category        String?
+  parent_asset_id String?
+  content_hash    String?
+  sealed_hash     String?
+  created_at      DateTime @default(now())
+
+  @@id([tenant_id, asset_id])
+  @@index([tenant_id])
+  @@index([tenant_id, tag])
+  @@index([tenant_id, parent_asset_id])
+}
+
+/// Category Schema — used by C2.
+model CategorySchema {
+  tenant_id      String
+  category_id    String
+  name           String
+  protected_flag Boolean  @default(false)
+  prestocked_flag Boolean @default(false)
+  asset_list     String   @default("[]")
+  created_at     DateTime @default(now())
+
+  @@id([tenant_id, category_id])
+  @@index([tenant_id])
+}
+
+/// Usage Log — used by C3.
+model UsageLog {
+  id                 String   @id @default(uuid())
+  tenant_id          String
+  asset_id           String
+  deployed_at        DateTime @default(now())
+  deployment_context String?
+
+  @@index([tenant_id])
+  @@index([tenant_id, asset_id])
+}
+
+/// Governance Record — used by C6. Access restricted to a tenant's own approvers.
+model GovernanceRecord {
+  id                     String   @id @default(uuid())
+  tenant_id              String
+  condition              String
+  confidence_tag         String?
+  register               String?
+  shift_strength         String?
+  allowed_to_acknowledge String?  // What this record is explicitly allowed to acknowledge (descriptive content)
+  must_not_presume       String?  // What must NOT be assumed (descriptive content)
+  belongs_here           Boolean  @default(false)
+  disposition            String?
+  created_at             DateTime @default(now())
+
+  @@index([tenant_id])
+}
+
+/// Proposal / Approval Log — used by C7. APPEND-ONLY (immutable once written).
+/// The repository layer exposes only create + read (no update / no delete).
+model ProposalApprovalLog {
+  proposal_id     String   @id @default(uuid())
+  tenant_id       String
+  items           String   @default("[]")
+  confidence      String   @default("[]")
+  rationale       String   @default("[]")
+  approval_status String
+  approved_items  String   @default("[]")
+  approved_by     String?
+  approved_at     DateTime?
+  mode            String?
+  created_at      DateTime @default(now())
+
+  @@index([tenant_id])
+}
+
+/// Agent Configuration — used by C8.
+model AgentConfiguration {
+  tenant_id                 String
+  agent_id                  String
+  role_scope                String?
+  ground_truth_version      String?
+  scoped_instruction_version String?
+  created_at                DateTime @default(now())
+
+  @@id([tenant_id, agent_id])
+  @@index([tenant_id])
+}

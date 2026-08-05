@@ -1,0 +1,14 @@
+node_modules/
+dist/
+*.log
+
+# Local SQLite databases
+prisma/*.db
+prisma/*.db-journal
+
+# Prisma generated client (regenerated via `prisma generate`)
+# (kept out of VCS; generated on install/test)
+
+# Env
+.env.local
+.abacus.donotdelete
