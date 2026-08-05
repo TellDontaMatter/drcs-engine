@@ -6,4 +6,5 @@
 export * from './types';
 export * as persistence from './persistence';
 export * as c1 from './gates/c1';
+export * as c2 from './gates/c2';
 export * as c6 from './gates/c6';

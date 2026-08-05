@@ -187,6 +187,73 @@ export interface GovernResult {
   record: GovernanceRecordData;
 }
 
+/* ────────────────────────────────────────────────────────────────────────
+ * C2 — SITUATIONAL BANK
+ * Blueprint Section 11 (Zilly taxonomy), Section 5A (seed-before-select
+ * prerequisite), Section 19 acceptance test (selection by real-time condition
+ * signal only — NO date/calendar selection path).
+ * Contract (Section 17): select_category(condition_signal, tenant_config)
+ *   -> { category_id, available_assets[] }.
+ * ──────────────────────────────────────────────────────────────────────── */
+
+/**
+ * A real-time situational condition signal — the input to C2.selectCategory().
+ *
+ * IMPORTANT (Section 19): selection is driven ONLY by the situational read carried
+ * here. There is deliberately NO date, time, weekday, or calendar field on this
+ * type, and the gate must never resolve a category from wall-clock information.
+ * Even the "Friday" category is chosen because an upstream signal reports the
+ * Friday *situation*, never because the engine inspected the calendar.
+ */
+export interface ConditionSignal {
+  /** Explicit target category id (already resolved upstream), if known. */
+  category_id?: string;
+  /**
+   * Situational label to resolve against the tenant's category names
+   * (case-insensitive). Used when an explicit category_id is not supplied.
+   */
+  situation?: string;
+}
+
+/**
+ * A situational category as configured for a tenant (Blueprint Section 11 /
+ * Section 14 CategorySchema).
+ */
+export interface CategoryRecordData {
+  tenant_id: string;
+  category_id: string;
+  name: string;
+  /** Protected categories must never be silently downgraded/substituted. */
+  protected_flag: boolean;
+  /** Whether the category is pre-stocked with content. */
+  prestocked_flag: boolean;
+  /** Asset ids available in this category (may be empty by design, e.g. Adversity). */
+  asset_list: string[];
+  created_at?: Date;
+}
+
+/**
+ * Result of C2.selectCategory().
+ * Blueprint Section 17: -> { category_id, available_assets[] }. Extra fields
+ * surface protection/pre-stock status and a human-readable reason so downstream
+ * gates never have to re-derive them (and never silently downgrade a protected
+ * category).
+ */
+export interface SelectCategoryResult {
+  /** The resolved category id, or null when no category matched the signal. */
+  category_id: string | null;
+  /** Asset ids available in the resolved category (empty when none / no match). */
+  available_assets: string[];
+  /** Whether a category was resolved from the signal. */
+  matched: boolean;
+  /** Whether the resolved category is protected (never to be downgraded). */
+  protected: boolean;
+  /** Whether the resolved category is pre-stocked. */
+  prestocked: boolean;
+  /** Human-readable explanation (always populated). */
+  reason: string;
+}
+
 /** A single anomaly discovered by the canonical integrity audit. */
 export interface AuditFinding {
   asset_id: string;

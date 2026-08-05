@@ -5,14 +5,15 @@ fully multi-tenant. Every gate is a standalone, independently-invocable, pure-is
 function whose behavior is driven by per-tenant **configuration**, never by hardcoded
 tenant/asset identifiers.
 
-This repository currently implements **Section 20, steps 1–3** of the approved
+This repository currently implements **Section 20, steps 1–4** of the approved
 blueprint:
 
 1. **C1 — Source of Truth Lock** (the foundation gate)
 2. **The tenant-scoped persistence layer** (all six Section 14 data schemas)
 3. **C6 — Message-Idea Governance** (the runtime entry point; produces a disposition + record)
+4. **C2 — Situational Bank** (resolves a situational category from a real-time signal)
 
-The remaining gates (C2, C3, C4, C5, C7, C8) are intentionally not yet implemented —
+The remaining gates (C3, C4, C5, C7, C8) are intentionally not yet implemented —
 they come later in the blueprint implementation sequence.
 
 ---
@@ -28,10 +29,12 @@ src/
 │       ├── assetRegistry.ts       # Asset Registry (C1, C2, C4, C5)
 │       ├── tenantConfig.ts        # Per-tenant config incl. quarantine list
 │       ├── gateState.ts           # Per-tenant/per-gate freeze state
+│       ├── categorySchema.ts      # Situational taxonomy (C2)
 │       ├── proposalApprovalLog.ts # Proposal/Approval log (C7) — APPEND-ONLY
 │       └── governanceRecord.ts    # Governance Record (C6) — historically queryable
 ├── gates/
 │   ├── c1/                    # C1 — Source of Truth Lock
+│   ├── c2/                    # C2 — Situational Bank
 │   └── c6/                    # C6 — Message-Idea Governance
 ├── seeds/
 │   └── zilly.ts               # Zilly reference-deployment seed (first tenant)
@@ -136,6 +139,41 @@ acknowledge, e.g. *"it's late; the deadline is close"*) and `must_not_presume` (
 must not assume, e.g. *"that the student is panicking"*) — are stored as **text and are
 never null**. A record is written for **every** trigger, making governance decisions
 historically queryable per tenant via `governanceRecord.listRecords(tenant_id, filter?)`.
+
+---
+
+## C2 — Situational Bank
+
+```ts
+selectCategory(condition_signal: ConditionSignal, tenant_id: string)
+  => Promise<{ category_id: string | null; available_assets: string[]; matched: boolean;
+               protected: boolean; prestocked: boolean; reason: string }>
+```
+
+C2 organizes content by situational category and resolves the correct category from
+a **real-time condition signal**.
+
+**Hard constraint (Section 19 — no calendar selection):** selection is driven *only*
+by the situational signal. There is deliberately **no** date/time/weekday/calendar
+field on `ConditionSignal`, and the gate contains no clock lookup. A dedicated test
+**statically scans the compiled gate source** and asserts it is free of date/clock
+APIs (`new Date`, `Date.now`, `.getDay()`, …). Even the **Friday** category is chosen
+because an upstream signal reports the Friday *situation*, never because the engine
+read the calendar.
+
+**Section 5A prerequisite (seed before select):** a tenant's taxonomy must be seeded
+before `selectCategory()` can function. Calling it for a tenant with no categories
+throws `TaxonomyNotSeededError` rather than silently returning nothing.
+
+Resolution order (signal-only): explicit `category_id` → `situation` matched against
+category names (case-insensitive) → otherwise a no-match result (never a date
+fallback; returning no category is a valid outcome).
+
+**Zilly taxonomy (Blueprint Section 11 — 9 categories):** Gentle Start, Building
+Momentum, Chaos, Comic Relief, **Adversity** (empty by design — `prestocked_flag:
+false`), Victory, Transition/Pivot, Weather-Specific, **Friday** (`protected_flag:
+true` — never downgraded/substituted). A resolved protected category is returned
+exactly as-is; the gate performs no downgrade of a resolved category.
 
 ---
 
