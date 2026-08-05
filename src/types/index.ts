@@ -273,3 +273,94 @@ export interface AuditResult {
   findings: AuditFinding[];
   frozen: boolean;
 }
+
+/* ────────────────────────────────────────────────────────────────────────
+ * C4 — CAPTION-FIRST RESOLUTION
+ * Blueprint Section 20 step 6. Contract (Section 17):
+ *   resolve(category_id, content_need) -> { resolved, asset_id, caption }
+ *                                        OR { escalate: true }.
+ *
+ * Philosophy: prefer reusing existing content over creating new content. The
+ * gate walks a STRICT, never-skipped 3-step ladder and stops at the first step
+ * that yields a usable asset:
+ *   1. existing-as-is  — an asset already in the category whose current caption
+ *                        already satisfies the need.
+ *   2. recaption       — an asset in the category is reusable, but its caption
+ *                        must be replaced with the needed caption.
+ *   3. escalate to C5  — no reusable asset exists in the category.
+ * ──────────────────────────────────────────────────────────────────────── */
+
+/**
+ * The three ordered C4 resolution steps. A resolution NEVER skips a step: the
+ * recaption step is only reached when no existing-as-is match exists, and
+ * escalation is only reached when neither of the first two steps can produce an
+ * asset.
+ */
+export const C4ResolutionStep = {
+  /** An existing asset's current caption already satisfies the need. */
+  EXISTING_AS_IS: 'existing_as_is',
+  /** An existing asset is reused with a newly-applied caption. */
+  RECAPTION: 'recaption',
+  /** No reusable asset in the category — hand off to C5 (Misalignment Protocol). */
+  ESCALATE_TO_C5: 'escalate_to_c5',
+} as const;
+
+export type C4ResolutionStep =
+  (typeof C4ResolutionStep)[keyof typeof C4ResolutionStep];
+
+/**
+ * The content need C4 must satisfy within a category.
+ *
+ * `caption` is the caption the deployment requires; it drives both the
+ * existing-as-is match (does any asset already carry this caption?) and the
+ * recaption step (apply this caption to a reusable asset).
+ */
+export interface ContentNeed {
+  /** The caption text the deployment needs (required, non-empty). */
+  caption: string;
+  /**
+   * Optional tag restriction (e.g. only resolve against canonical assets).
+   * When omitted, assets of any tag in the category are eligible.
+   */
+  required_tag?: AssetTag;
+  /**
+   * Optional asset ids to exclude from resolution — e.g. assets an upstream
+   * gate (such as C3) has already ruled out for this deployment.
+   */
+  exclude_asset_ids?: string[];
+}
+
+/** Successful C4 resolution (steps 1–2). */
+export interface ResolveResolved {
+  resolved: true;
+  escalate: false;
+  /** The asset selected for the deployment. */
+  asset_id: string;
+  /**
+   * The caption to deploy with. For `existing_as_is` this is the asset's own
+   * current caption; for `recaption` this is the needed caption.
+   */
+  caption: string;
+  /** Which step produced the resolution (never `escalate_to_c5` here). */
+  resolution_step: 'existing_as_is' | 'recaption';
+  /** Human-readable explanation (always populated). */
+  reason: string;
+}
+
+/** Escalated C4 result (step 3) — control passes to C5. */
+export interface ResolveEscalated {
+  resolved: false;
+  escalate: true;
+  asset_id: null;
+  caption: null;
+  resolution_step: 'escalate_to_c5';
+  /** Human-readable explanation (always populated). */
+  reason: string;
+}
+
+/**
+ * Result of C4.resolve(). A discriminated union on `resolved`/`escalate`. The
+ * blueprint's two shapes ({resolved, asset_id, caption} OR {escalate:true}) are
+ * both present as a superset with `resolution_step` + `reason` for observability.
+ */
+export type ResolveResult = ResolveResolved | ResolveEscalated;

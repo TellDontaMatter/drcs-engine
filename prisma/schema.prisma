@@ -59,6 +59,7 @@ model AssetRegistry {
   asset_id        String
   tag             String
   category        String?
+  caption         String?
   parent_asset_id String?
   content_hash    String?
   sealed_hash     String?
