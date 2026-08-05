@@ -37,6 +37,7 @@ import { checkRepetition } from '../gates/c3';
 import { generate as generateC5 } from '../gates/c5';
 import * as usageLog from '../persistence/repositories/usageLog';
 import * as assetRegistry from '../persistence/repositories/assetRegistry';
+import * as categorySchema from '../persistence/repositories/categorySchema';
 import * as assets from '../assets';
 import * as llm from '../llm';
 import { getMediaGenerator } from '../media';
@@ -426,37 +427,64 @@ export async function evaluate(
 
 /**
  * Extract the two structured fields the engine needs — `situation` and
- * `content_type` — from a free-form idea, using the LLM. Kept exported so the
- * mapping is testable and observable.
+ * `content_type` — from a free-form idea, using the LLM.
  *
- * Degrades gracefully: if the LLM is unreachable or returns nothing usable, the
- * raw prompt becomes the situation and `content_type` defaults to "post" — the
- * pipeline still runs (C5 can generate from the raw idea).
+ * CRITICAL: C2 (Situational Bank) matches the `situation` against the tenant's
+ * category NAMES by exact (case-insensitive) string. A free-form description
+ * therefore never matches. So this function first loads the tenant's actual
+ * category names and asks the LLM to pick the single best-matching name from
+ * that closed list; the chosen name is returned verbatim as `situation` so C2
+ * can resolve it directly. Kept exported so the mapping is testable/observable.
+ *
+ * Degrades gracefully at every step: if the tenant has no categories, or the LLM
+ * is unreachable / returns something not in the list, the raw prompt becomes the
+ * situation and `content_type` defaults to "post" — the pipeline still runs (C2
+ * may not match, in which case C5 can generate from the raw idea).
  *
  * @param prompt A free-form content idea.
+ * @param tenant_id Tenant identifier (loads that tenant's category names).
  * @returns `{ situation, content_type }`.
  */
 export async function extractPromptFields(
   prompt: string,
+  tenant_id: string,
 ): Promise<{ situation: string; content_type: string }> {
   const trimmed = prompt.trim();
   const fallback = { situation: trimmed, content_type: 'post' };
   if (trimmed.length === 0) return fallback;
 
+  // Load the tenant's real category names — this is the closed set C2 matches on.
+  let categoryNames: string[] = [];
+  try {
+    const categories = await categorySchema.listCategories(tenant_id);
+    categoryNames = categories.map((c) => c.name).filter((n) => n.trim().length > 0);
+  } catch {
+    categoryNames = [];
+  }
+
+  // With no taxonomy there is nothing to map to — fall back to the raw prompt.
+  if (categoryNames.length === 0) return fallback;
+
+  const list = categoryNames.map((n) => `- ${n}`).join('\n');
+
   let raw: string;
   try {
     raw = await llm.callLLM(
-      `A user gave this free-form content idea: "${trimmed}".\n` +
-        `Extract two things:\n` +
-        `1. "situation": a one-sentence description of the situation/moment behind the idea.\n` +
-        `2. "content_type": the kind of content wanted — one short word like "clip", "image", "video", or "post".\n\n` +
+      `A user gave this free-form content idea: "${trimmed}".\n\n` +
+        `Here is the list of available content categories:\n${list}\n\n` +
+        `Pick the SINGLE category from the list above that best fits the idea. ` +
+        `You must choose one of the exact names listed — do not invent a new one. ` +
+        `Also determine "content_type": the kind of content wanted — one short ` +
+        `word like "clip", "image", "video", or "post".\n\n` +
         `Respond ONLY with a compact JSON object of the exact shape ` +
-        `{"situation": string, "content_type": string} and nothing else.`,
+        `{"category": string, "content_type": string} where "category" is copied ` +
+        `verbatim from the list, and nothing else.`,
       {
         system:
-          'You extract structured fields from a content idea and always answer ' +
-          'with the exact JSON object requested.',
-        temperature: 0.2,
+          'You map a content idea to exactly one category from a fixed list and ' +
+          'always answer with the exact JSON object requested, copying the ' +
+          'category name verbatim from the provided list.',
+        temperature: 0.1,
       },
     );
   } catch {
@@ -467,10 +495,14 @@ export async function extractPromptFields(
   if (!match) return fallback;
   try {
     const obj = JSON.parse(match[0]) as Record<string, unknown>;
-    const situation =
-      typeof obj.situation === 'string' && obj.situation.trim().length > 0
-        ? obj.situation.trim()
-        : trimmed;
+    const chosen =
+      typeof obj.category === 'string' ? obj.category.trim() : '';
+    // Resolve the LLM's choice back to an exact category name (case-insensitive),
+    // so `situation` is guaranteed to be a name C2 can match verbatim.
+    const resolved = categoryNames.find(
+      (n) => n.trim().toLowerCase() === chosen.toLowerCase(),
+    );
+    const situation = resolved ?? trimmed;
     const content_type =
       typeof obj.content_type === 'string' && obj.content_type.trim().length > 0
         ? obj.content_type.trim()
@@ -500,7 +532,7 @@ export async function evaluatePrompt(
   tenant_id: string,
   prompt: string,
 ): Promise<EvaluationVerdict> {
-  const { situation, content_type } = await extractPromptFields(prompt);
+  const { situation, content_type } = await extractPromptFields(prompt, tenant_id);
 
   const request: EvaluationRequest = {
     trigger: { condition: situation },

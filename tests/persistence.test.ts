@@ -53,7 +53,7 @@ describe('Zilly seed', () => {
     const canonicals = await assetRegistry.listAssets(ZILLY_TENANT_ID, AssetTag.CANONICAL);
     expect(canonicals).toHaveLength(8);
     for (const clip of ZILLY_CANONICAL_CLIPS) {
-      const res = await c1.validate(clip, AssetTag.CANONICAL, ZILLY_TENANT_ID);
+      const res = await c1.validate(clip.asset_id, AssetTag.CANONICAL, ZILLY_TENANT_ID);
       expect(res.valid).toBe(true);
     }
 

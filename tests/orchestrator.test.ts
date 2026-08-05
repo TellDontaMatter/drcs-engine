@@ -297,15 +297,16 @@ describe('Orchestrator — full pipeline', () => {
 });
 
 describe('Orchestrator — simplified prompt input (evaluatePrompt)', () => {
-  it('derives situation + content type from a free-form idea, then reuses a matching clip', async () => {
-    // First (and only) LLM call = field extraction; the derived situation both
-    // resolves the category (C2 matches by name) and drives the caption need so
-    // C4 reuses the seeded clip as-is (no C5 needed). For that to line up the
-    // category NAME and the asset caption both equal the extracted situation.
+  it('maps a free-form idea to a category name, then reuses a matching clip', async () => {
+    // First (and only) LLM call = category mapping; the LLM picks a category NAME
+    // verbatim from the tenant's list. That name becomes the situation, which
+    // both resolves the category (C2 matches by name) and drives the caption need
+    // so C4 reuses the seeded clip as-is (no C5 needed). For that to line up the
+    // category NAME and the asset caption both equal the chosen category name.
     jest
       .spyOn(llm, 'callLLM')
       .mockResolvedValue(
-        JSON.stringify({ situation: 'Ease into it.', content_type: 'clip' }),
+        JSON.stringify({ category: 'Ease into it.', content_type: 'clip' }),
       );
     await seedAsset(TENANT, 'clip_a', 'Ease into it.');
     await categorySchema.upsertCategory({
