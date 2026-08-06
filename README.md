@@ -37,7 +37,8 @@ src/
 │   ├── c2/                    # C2 — Situational Bank
 │   └── c6/                    # C6 — Message-Idea Governance
 ├── seeds/
-│   └── zilly.ts               # Zilly reference-deployment seed (first tenant)
+│   ├── zilly.ts               # Zilly reference-deployment seed (fitness clips)
+│   └── silent-systems.ts      # Silent Systems seed (documentary content pool)
 └── index.ts                   # Public entry point
 prisma/
 ├── schema.prisma              # All six Section 14 schemas + foundation tables
@@ -205,6 +206,36 @@ Plus two foundation tables required to run C1 in a config-driven way:
   (`01_double_bounce_launch` … `08_victory_jump`) as `canonical` assets.
 - **Does not** register `CapyCardioRef` or Drive files `002–009` — they are
   quarantined, not registered.
+
+Zilly seeds its situational taxonomy with **empty** `asset_list`s — content
+assignment there is a separate, later step.
+
+---
+
+## Silent Systems deployment (content pool)
+
+`src/seeds/silent-systems.ts` establishes a **separate tenant** — an
+infrastructure-documentary library, not a fitness deployment — on the same generic
+engine. Unlike Zilly, its library is fully defined, so the seed stands up a
+**populated content pool**:
+
+- Registers the **8 locked episodes** (`E01`–`E08`) as `canonical` assets.
+- Seeds the **3 situational categories** as the C2 Section 5A taxonomy, each
+  **protected** (the library is locked) and **prestocked** with its episodes:
+
+| Category | Episodes |
+|----------|----------|
+| Water & Waste | E01, E02, E03 |
+| Transmission | E04, E05, E06 |
+| Communications | E07, E08 |
+
+After seeding, C2 resolves the pool from a situational signal — e.g.
+`c2.selectCategory({ situation: 'Transmission' }, 'silent-systems')` returns the
+Transmission category and its three episode assets. Run it with:
+
+```bash
+npm run seed:silent-systems
+```
 
 ---
 
