@@ -54,16 +54,36 @@ export const ZILLY_CATEGORIES: readonly ZillyCategorySeed[] = [
   { category_id: 'friday', name: 'Friday', protected_flag: true, prestocked_flag: true },
 ];
 
-/** The 8 confirmed-exported canonical clips for Zilly. */
-export const ZILLY_CANONICAL_CLIPS: readonly string[] = [
-  '01_double_bounce_launch',
-  '02_side_shuffle',
-  '03_high_knees',
-  '04_squat_pulse',
-  '05_arm_circles',
-  '06_jump_rope',
-  '07_cooldown_stretch',
-  '08_victory_jump',
+/**
+ * A canonical clip plus its attached media file and caption.
+ *
+ * `file_path` is repo-relative so it resolves from the project root. Only
+ * `08_victory_jump` points at a real bundled media file
+ * (media/assets/zilly_mascot.png). Every other clip points at a per-asset
+ * placeholder path (media/assets/zilly_<asset_id>.png) — the SLOT where that
+ * clip's real media will live once mapped in. Every clip carries a simple,
+ * situation-appropriate caption so the Content Retrieval layer always returns a
+ * usable (file_path + caption) pair.
+ */
+export interface ZillyClipSeed {
+  asset_id: string;
+  file_path: string;
+  caption: string;
+}
+
+/** The single bundled real media file (the Zilly mascot image). */
+const ZILLY_MASCOT_FILE = 'media/assets/zilly_mascot.png';
+
+/** The 8 confirmed-exported canonical clips for Zilly, with media + captions. */
+export const ZILLY_CANONICAL_CLIPS: readonly ZillyClipSeed[] = [
+  { asset_id: '01_double_bounce_launch', file_path: 'media/assets/zilly_01_double_bounce_launch.png', caption: 'Ease into it — double bounce to start.' },
+  { asset_id: '02_side_shuffle', file_path: 'media/assets/zilly_02_side_shuffle.png', caption: 'Side to side — shuffle it out.' },
+  { asset_id: '03_high_knees', file_path: 'media/assets/zilly_03_high_knees.png', caption: 'Pick up the pace with high knees.' },
+  { asset_id: '04_squat_pulse', file_path: 'media/assets/zilly_04_squat_pulse.png', caption: 'Feel the burn — squat pulses.' },
+  { asset_id: '05_arm_circles', file_path: 'media/assets/zilly_05_arm_circles.png', caption: 'Loosen up with big arm circles.' },
+  { asset_id: '06_jump_rope', file_path: 'media/assets/zilly_06_jump_rope.png', caption: 'All-out jump rope scramble!' },
+  { asset_id: '07_cooldown_stretch', file_path: 'media/assets/zilly_07_cooldown_stretch.png', caption: 'Wind it down — cooldown stretch.' },
+  { asset_id: '08_victory_jump', file_path: ZILLY_MASCOT_FILE, caption: 'You made it — victory jump!' },
 ];
 
 /**
@@ -114,18 +134,32 @@ export async function seedZilly(): Promise<{
     });
   }
 
-  // 2. Load the 8 canonical clips (skip any already registered).
+  // 2. Load the 8 canonical clips. New clips are created with their media file
+  //    and caption; already-registered clips have their file_path and caption
+  //    back-filled so re-seeding an existing DB attaches the media slots too
+  //    (idempotent, and never touches hashes/tags/parent).
   let loaded = 0;
   for (const clip of ZILLY_CANONICAL_CLIPS) {
-    const existing = await assetRegistry.getAsset(ZILLY_TENANT_ID, clip);
-    if (existing) continue;
+    const existing = await assetRegistry.getAsset(ZILLY_TENANT_ID, clip.asset_id);
+    if (existing) {
+      // Back-fill the media file path and caption onto an already-seeded asset.
+      if (existing.file_path !== clip.file_path) {
+        await assetRegistry.updateFilePath(ZILLY_TENANT_ID, clip.asset_id, clip.file_path);
+      }
+      if (existing.caption !== clip.caption) {
+        await assetRegistry.updateCaption(ZILLY_TENANT_ID, clip.asset_id, clip.caption);
+      }
+      continue;
+    }
     // A canonical clip has no parent; its sealed_hash == content_hash at lock time.
-    const hash = `sha256:${clip}`;
+    const hash = `sha256:${clip.asset_id}`;
     await assetRegistry.createAsset({
       tenant_id: ZILLY_TENANT_ID,
-      asset_id: clip,
+      asset_id: clip.asset_id,
       tag: AssetTag.CANONICAL,
       category: 'zilly_cardio',
+      caption: clip.caption,
+      file_path: clip.file_path,
       parent_asset_id: null,
       content_hash: hash,
       sealed_hash: hash,

@@ -254,6 +254,68 @@ export interface SelectCategoryResult {
   reason: string;
 }
 
+/* ────────────────────────────────────────────────────────────────────────
+ * C3 — REPETITION GOVERNOR
+ * Enforces max_count within a rolling_window, counted per deployment instance
+ * (regardless of category). Blueprint locked params: max_count=3,
+ * rolling_window=30 days, counting_unit=per deployment instance.
+ * Contract (Section 17): check_repetition(asset_id, tenant_params)
+ *   -> { allowed, current_count, window_remaining }.
+ * Fails CLOSED on any usage-log integrity issue.
+ * ──────────────────────────────────────────────────────────────────────── */
+
+/** The counting unit for repetition. Locked to per-deployment-instance. */
+export const CountingUnit = {
+  /** Every deployment instance of the asset counts, regardless of category. */
+  PER_DEPLOYMENT_INSTANCE: 'per_deployment_instance',
+} as const;
+
+export type CountingUnit = (typeof CountingUnit)[keyof typeof CountingUnit];
+
+/** Blueprint-locked C3 parameters (the defaults applied when omitted). */
+export const C3_LOCKED_PARAMS = {
+  max_count: 3,
+  rolling_window_days: 30,
+  counting_unit: CountingUnit.PER_DEPLOYMENT_INSTANCE,
+} as const;
+
+/**
+ * Tenant parameters for C3.checkRepetition() (the `tenant_params` contract arg).
+ * `tenant_id` scopes the usage log. The numeric params default to the blueprint
+ * locked values; `now` is injectable purely so the rolling window is testable
+ * (it defaults to the real wall clock — unlike C2, C3 legitimately uses time).
+ */
+export interface RepetitionParams {
+  tenant_id: string;
+  /** Max deployments permitted within the window. Default: 3. */
+  max_count?: number;
+  /** Rolling window length in days. Default: 30. */
+  rolling_window_days?: number;
+  /** Injectable "now" for deterministic tests. Default: new Date(). */
+  now?: Date;
+}
+
+/**
+ * Result of C3.checkRepetition().
+ * Blueprint Section 17: -> { allowed, current_count, window_remaining }.
+ */
+export interface RepetitionResult {
+  /** Whether one more deployment is permitted (current_count < max_count). */
+  allowed: boolean;
+  /** Number of in-window deployment instances counted for this asset. */
+  current_count: number;
+  /**
+   * Milliseconds the caller must wait before a deployment would be allowed
+   * again. 0 when already allowed; when blocked, the time until enough of the
+   * oldest in-window deployments age out of the window to drop below max_count.
+   */
+  window_remaining_ms: number;
+  /** Whether the gate failed closed due to a usage-log integrity issue. */
+  failed_closed: boolean;
+  /** Human-readable explanation (always populated). */
+  reason: string;
+}
+
 /** A single anomaly discovered by the canonical integrity audit. */
 export interface AuditFinding {
   asset_id: string;
@@ -273,3 +335,155 @@ export interface AuditResult {
   findings: AuditFinding[];
   frozen: boolean;
 }
+
+/* ────────────────────────────────────────────────────────────────────────
+ * C4 — CAPTION-FIRST RESOLUTION
+ * Blueprint Section 20 step 6. Contract (Section 17):
+ *   resolve(category_id, content_need) -> { resolved, asset_id, caption }
+ *                                        OR { escalate: true }.
+ *
+ * Philosophy: prefer reusing existing content over creating new content. The
+ * gate walks a STRICT, never-skipped 3-step ladder and stops at the first step
+ * that yields a usable asset:
+ *   1. existing-as-is  — an asset already in the category whose current caption
+ *                        already satisfies the need.
+ *   2. recaption       — an asset in the category is reusable, but its caption
+ *                        must be replaced with the needed caption.
+ *   3. escalate to C5  — no reusable asset exists in the category.
+ * ──────────────────────────────────────────────────────────────────────── */
+
+/**
+ * The three ordered C4 resolution steps. A resolution NEVER skips a step: the
+ * recaption step is only reached when no existing-as-is match exists, and
+ * escalation is only reached when neither of the first two steps can produce an
+ * asset.
+ */
+export const C4ResolutionStep = {
+  /** An existing asset's current caption already satisfies the need. */
+  EXISTING_AS_IS: 'existing_as_is',
+  /** An existing asset is reused with a newly-applied caption. */
+  RECAPTION: 'recaption',
+  /** No reusable asset in the category — hand off to C5 (Misalignment Protocol). */
+  ESCALATE_TO_C5: 'escalate_to_c5',
+} as const;
+
+export type C4ResolutionStep =
+  (typeof C4ResolutionStep)[keyof typeof C4ResolutionStep];
+
+/**
+ * The content need C4 must satisfy within a category.
+ *
+ * `caption` is the caption the deployment requires; it drives both the
+ * existing-as-is match (does any asset already carry this caption?) and the
+ * recaption step (apply this caption to a reusable asset).
+ */
+export interface ContentNeed {
+  /** The caption text the deployment needs (required, non-empty). */
+  caption: string;
+  /**
+   * Optional tag restriction (e.g. only resolve against canonical assets).
+   * When omitted, assets of any tag in the category are eligible.
+   */
+  required_tag?: AssetTag;
+  /**
+   * Optional asset ids to exclude from resolution — e.g. assets an upstream
+   * gate (such as C3) has already ruled out for this deployment.
+   */
+  exclude_asset_ids?: string[];
+}
+
+/** Successful C4 resolution (steps 1–2). */
+export interface ResolveResolved {
+  resolved: true;
+  escalate: false;
+  /** The asset selected for the deployment. */
+  asset_id: string;
+  /**
+   * The caption to deploy with. For `existing_as_is` this is the asset's own
+   * current caption; for `recaption` this is the needed caption.
+   */
+  caption: string;
+  /** Which step produced the resolution (never `escalate_to_c5` here). */
+  resolution_step: 'existing_as_is' | 'recaption';
+  /** Human-readable explanation (always populated). */
+  reason: string;
+}
+
+/** Escalated C4 result (step 3) — control passes to C5. */
+export interface ResolveEscalated {
+  resolved: false;
+  escalate: true;
+  asset_id: null;
+  caption: null;
+  resolution_step: 'escalate_to_c5';
+  /** Human-readable explanation (always populated). */
+  reason: string;
+}
+
+/**
+ * Result of C4.resolve(). A discriminated union on `resolved`/`escalate`. The
+ * blueprint's two shapes ({resolved, asset_id, caption} OR {escalate:true}) are
+ * both present as a superset with `resolution_step` + `reason` for observability.
+ */
+export type ResolveResult = ResolveResolved | ResolveEscalated;
+
+/* ────────────────────────────────────────────────────────────────────────
+ * C5 — MISALIGNMENT PROTOCOL
+ * Fires only when C4 escalates (no reusable asset satisfied the need). Rather
+ * than fail the request, C5 GENERATES fresh content: it asks the LLM for a new
+ * caption tailored to the situation + category, and recommends the kind of
+ * asset that would pair with it. If the LLM is unreachable it fails explicitly
+ * (ESCALATE_FAILED) — it never fabricates a silent fallback.
+ * ──────────────────────────────────────────────────────────────────────── */
+
+/** The two terminal actions C5 can return. */
+export const C5Action = {
+  /** A fresh caption was generated (+ an asset recommendation). */
+  GENERATED: 'GENERATED',
+  /** Generation could not complete (e.g. the LLM was unreachable). */
+  ESCALATE_FAILED: 'ESCALATE_FAILED',
+} as const;
+
+export type C5Action = (typeof C5Action)[keyof typeof C5Action];
+
+/** Input to C5.generate(). */
+export interface C5Request {
+  tenant_id: string;
+  /** The raw situational read (from the trigger / prompt). */
+  situation: string;
+  /** The category C2 resolved (context for the generated caption). */
+  category: string;
+  /** The kind of content requested (e.g. "clip", "image", "post"). */
+  content_type: string;
+}
+
+/** C5 successfully generated fresh content. */
+export interface C5Generated {
+  action: 'GENERATED';
+  /** The freshly generated caption. */
+  caption: string;
+  /** A brief description of the clip/image that would pair well. */
+  asset_recommendation: string;
+}
+
+/** C5 could not generate (LLM error / empty response). */
+export interface C5Failed {
+  action: 'ESCALATE_FAILED';
+  /** Human-readable explanation of why generation failed. */
+  reason: string;
+}
+
+/** Result of C5.generate(). Discriminated union on `action`. */
+export type C5Result = C5Generated | C5Failed;
+
+/**
+ * Where a deployment's final caption came from, end-to-end. `AS_IS` and
+ * `RECAPTIONED` come from C4; `GENERATED` comes from C5.
+ */
+export const CaptionSource = {
+  AS_IS: 'AS_IS',
+  RECAPTIONED: 'RECAPTIONED',
+  GENERATED: 'GENERATED',
+} as const;
+
+export type CaptionSource = (typeof CaptionSource)[keyof typeof CaptionSource];
